@@ -2,6 +2,7 @@ from pydantic import BaseModel, HttpUrl
 from typing import List, Optional, Any
 from datetime import datetime
 
+
 class SourceBase(BaseModel):
     name: str
     url: str
@@ -10,8 +11,10 @@ class SourceBase(BaseModel):
     category: Optional[str] = "General"
     is_active: Optional[bool] = True
 
+
 class SourceCreate(SourceBase):
     pass
+
 
 class SourceResponse(SourceBase):
     id: int
@@ -25,10 +28,12 @@ class SourceResponse(SourceBase):
     class Config:
         from_attributes = True
 
+
 class TechStackItem(BaseModel):
     name: str
     category: Optional[str] = "Tool"
     desc: Optional[str] = ""
+
 
 class ArticleResponse(BaseModel):
     id: int
@@ -53,6 +58,7 @@ class ArticleResponse(BaseModel):
     class Config:
         from_attributes = True
 
+
 class AIAnalysisResult(BaseModel):
     relevance_score: float
     is_worth_reading: bool
@@ -62,6 +68,7 @@ class AIAnalysisResult(BaseModel):
     key_takeaways: List[str] = []
     new_tech_stack: List[TechStackItem] = []
     tags: List[str] = []
+
 
 class CrawlTestResult(BaseModel):
     success: bool

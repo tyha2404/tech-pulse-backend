@@ -13,17 +13,65 @@ from sqlalchemy.future import select
 
 # Default authoritative sources (Global + Vietnam)
 DEFAULT_SOURCES = [
-    {"name": "Hacker News (Top Stories)", "url": "https://news.ycombinator.com", "source_type": "hn", "category": "Backend & Tech"},
-    {"name": "TechCrunch", "url": "https://techcrunch.com", "feed_url": "https://techcrunch.com/feed/", "source_type": "rss", "category": "Global Tech"},
-    {"name": "The Verge", "url": "https://theverge.com", "feed_url": "https://www.theverge.com/rss/index.xml", "source_type": "rss", "category": "Global Tech"},
-    {"name": "ArXiv Computer Science (AI)", "url": "https://arxiv.org", "feed_url": "http://export.arxiv.org/rss/cs.AI", "source_type": "rss", "category": "AI Research"},
-    {"name": "Martin Fowler Blog", "url": "https://martinfowler.com", "feed_url": "https://martinfowler.com/feed.atom", "source_type": "rss", "category": "Backend Architecture"},
-    {"name": "VnExpress Số Hóa", "url": "https://vnexpress.net/so-hoa", "feed_url": "https://vnexpress.net/rss/so-hoa.rss", "source_type": "rss", "category": "Vietnam Tech"},
-    {"name": "Tinh Tế", "url": "https://tinhte.vn", "feed_url": "https://tinhte.vn/rss", "source_type": "rss", "category": "Vietnam Tech"},
-    {"name": "GenK", "url": "https://genk.vn", "feed_url": "https://genk.vn/rss/home.rss", "source_type": "rss", "category": "Vietnam Tech"},
+    {
+        "name": "Hacker News (Top Stories)",
+        "url": "https://news.ycombinator.com",
+        "source_type": "hn",
+        "category": "Backend & Tech",
+    },
+    {
+        "name": "TechCrunch",
+        "url": "https://techcrunch.com",
+        "feed_url": "https://techcrunch.com/feed/",
+        "source_type": "rss",
+        "category": "Global Tech",
+    },
+    {
+        "name": "The Verge",
+        "url": "https://theverge.com",
+        "feed_url": "https://www.theverge.com/rss/index.xml",
+        "source_type": "rss",
+        "category": "Global Tech",
+    },
+    {
+        "name": "ArXiv Computer Science (AI)",
+        "url": "https://arxiv.org",
+        "feed_url": "http://export.arxiv.org/rss/cs.AI",
+        "source_type": "rss",
+        "category": "AI Research",
+    },
+    {
+        "name": "Martin Fowler Blog",
+        "url": "https://martinfowler.com",
+        "feed_url": "https://martinfowler.com/feed.atom",
+        "source_type": "rss",
+        "category": "Backend Architecture",
+    },
+    {
+        "name": "VnExpress Số Hóa",
+        "url": "https://vnexpress.net/so-hoa",
+        "feed_url": "https://vnexpress.net/rss/so-hoa.rss",
+        "source_type": "rss",
+        "category": "Vietnam Tech",
+    },
+    {
+        "name": "Tinh Tế",
+        "url": "https://tinhte.vn",
+        "feed_url": "https://tinhte.vn/rss",
+        "source_type": "rss",
+        "category": "Vietnam Tech",
+    },
+    {
+        "name": "GenK",
+        "url": "https://genk.vn",
+        "feed_url": "https://genk.vn/rss/home.rss",
+        "source_type": "rss",
+        "category": "Vietnam Tech",
+    },
 ]
 
 scheduler = AsyncIOScheduler()
+
 
 async def scheduled_crawl_job():
     print("⏰ [Scheduler] Running background crawl cycle...")
@@ -36,12 +84,13 @@ async def scheduled_crawl_job():
             except Exception as e:
                 print(f"Error crawling {s.name}: {e}")
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Initialize DB schema
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    
+
     # Seed default sources if empty
     async with AsyncSessionLocal() as db:
         count_res = await db.execute(select(Source))
@@ -53,25 +102,30 @@ async def lifespan(app: FastAPI):
                     feed_url=src_data.get("feed_url"),
                     source_type=src_data.get("source_type", "rss"),
                     category=src_data.get("category", "General"),
-                    status="healthy"
+                    status="healthy",
                 )
                 db.add(source)
             await db.commit()
             print("🌱 Initialized default tech news sources successfully!")
 
     # Start scheduler
-    scheduler.add_job(scheduled_crawl_job, 'interval', minutes=settings.CRAWL_INTERVAL_MINUTES)
+    scheduler.add_job(
+        scheduled_crawl_job, "interval", minutes=settings.CRAWL_INTERVAL_MINUTES
+    )
     scheduler.start()
-    print(f"🚀 Scheduler started: Running every {settings.CRAWL_INTERVAL_MINUTES} minutes.")
+    print(
+        f"🚀 Scheduler started: Running every {settings.CRAWL_INTERVAL_MINUTES} minutes."
+    )
 
     yield
 
     scheduler.shutdown()
 
+
 app = FastAPI(
     title=settings.PROJECT_NAME,
     description="Automated Tech News Aggregator & 9routers AI Analyzer",
-    lifespan=lifespan
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -83,6 +137,7 @@ app.add_middleware(
 )
 
 app.include_router(api_router, prefix="/api")
+
 
 @app.get("/")
 def root():

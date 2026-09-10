@@ -29,13 +29,15 @@ Trả về kết quả DUY NHẤT dưới dạng JSON hợp lệ (không kèm ma
 }
 """
 
-async def analyze_article_with_9router(title: str, content: str, url: str) -> AIAnalysisResult:
+
+async def analyze_article_with_9router(
+    title: str, content: str, url: str
+) -> AIAnalysisResult:
     # Connect to local 9router gateway
     client = AsyncOpenAI(
-        base_url=settings.NINEROUTERS_BASE_URL,
-        api_key=settings.NINEROUTERS_API_KEY
+        base_url=settings.NINEROUTERS_BASE_URL, api_key=settings.NINEROUTERS_API_KEY
     )
-    
+
     prompt = f"""TIÊU ĐỀ BÀI VIẾT: {title}
 URL: {url}
 NỘI DUNG:
@@ -47,12 +49,12 @@ NỘI DUNG:
             model=settings.AI_MODEL,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": prompt}
+                {"role": "user", "content": prompt},
             ],
-            temperature=0.3
+            temperature=0.3,
         )
         raw_answer = response.choices[0].message.content.strip()
-        
+
         # Clean JSON if model returns ```json ... ```
         if "```" in raw_answer:
             cleaned = raw_answer.split("```")[1]
@@ -72,5 +74,5 @@ NỘI DUNG:
             vietnamese_summary=f"Bài viết từ {url}. (Lưu ý: 9router AI phân tích trả về lỗi fallback: {str(e)[:100]})",
             key_takeaways=["Xem chi tiết bài viết tại liên kết gốc."],
             new_tech_stack=[],
-            tags=["Tech"]
+            tags=["Tech"],
         )

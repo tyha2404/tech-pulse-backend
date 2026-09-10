@@ -2,6 +2,7 @@ import httpx
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 
+
 async def discover_feed_url(target_url: str) -> tuple[str, str]:
     """
     Given a website URL, returns (detected_type, feed_or_target_url).
@@ -14,21 +15,29 @@ async def discover_feed_url(target_url: str) -> tuple[str, str]:
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
     }
-    
+
     # Try direct fetch
     try:
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True, headers=headers) as client:
+        async with httpx.AsyncClient(
+            timeout=10.0, follow_redirects=True, headers=headers
+        ) as client:
             resp = await client.get(target_url)
             content_type = resp.headers.get("content-type", "").lower()
             text = resp.text
 
             # If it's already an RSS/XML feed
-            if "xml" in content_type or "<rss" in text[:500].lower() or "<feed" in text[:500].lower():
+            if (
+                "xml" in content_type
+                or "<rss" in text[:500].lower()
+                or "<feed" in text[:500].lower()
+            ):
                 return "rss", str(resp.url)
 
             # Parse HTML for <link rel="alternate" type="application/rss+xml" ...>
             soup = BeautifulSoup(text, "html.parser")
-            feed_links = soup.find_all("link", rel=lambda r: r and "alternate" in r.lower())
+            feed_links = soup.find_all(
+                "link", rel=lambda r: r and "alternate" in r.lower()
+            )
             for link in feed_links:
                 t = link.get("type", "").lower()
                 if "rss" in t or "atom" in t or "xml" in t:
@@ -42,7 +51,10 @@ async def discover_feed_url(target_url: str) -> tuple[str, str]:
                 candidate = urljoin(str(resp.url), suffix)
                 try:
                     c_resp = await client.get(candidate)
-                    if c_resp.status_code == 200 and ("xml" in c_resp.headers.get("content-type", "") or "<rss" in c_resp.text[:500].lower()):
+                    if c_resp.status_code == 200 and (
+                        "xml" in c_resp.headers.get("content-type", "")
+                        or "<rss" in c_resp.text[:500].lower()
+                    ):
                         return "rss", candidate
                 except Exception:
                     continue
