@@ -1,6 +1,8 @@
 import datetime
+from typing import List, Optional
 import httpx
 from sqlalchemy.future import select
+from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.models import Source, Article
 from app.crawlers.article_crawler import (
