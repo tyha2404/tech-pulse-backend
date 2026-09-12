@@ -81,7 +81,9 @@ async def analyze_article_with_9router(
     title: str, content: str, url: str
 ) -> AIAnalysisResult:
     client = AsyncOpenAI(
-        base_url=settings.NINEROUTERS_BASE_URL, api_key=settings.NINEROUTERS_API_KEY
+        base_url=settings.NINEROUTERS_BASE_URL,
+        api_key=settings.NINEROUTERS_API_KEY,
+        timeout=120.0,
     )
 
     prompt = f"""TIÊU ĐỀ BÀI VIẾT: {title}
