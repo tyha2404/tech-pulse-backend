@@ -186,6 +186,7 @@ async def list_articles(
     read_status: str = Query("all", pattern="^(all|unread|read)$"),
     bookmarked_only: bool = False,
     include_hidden: bool = False,
+    group_duplicates: bool = True,
     limit: int = 50,
     offset: int = 0,
     db: AsyncSession = Depends(get_db),
@@ -207,6 +208,12 @@ async def list_articles(
         stmt = stmt.where(Article.is_hidden == False)
     else:
         stmt = stmt.where(Article.is_hidden == True)
+
+    # Story clustering filter: if group_duplicates=True, only show canonical or unclustered articles
+    if group_duplicates:
+        stmt = stmt.where(
+            (Article.is_canonical == True) | (Article.cluster_id.is_(None))
+        )
 
     # Read status filter
     if read_status == "unread":
@@ -242,11 +249,40 @@ async def list_articles(
     result = await db.execute(stmt)
     articles = result.scalars().all()
 
+    # If grouping duplicates, eagerly fetch non-canonical articles for the current page's clusters
+    cluster_ids = [art.cluster_id for art in articles if art.cluster_id]
+    related_map = {}
+    if group_duplicates and cluster_ids:
+        rel_stmt = (
+            select(Article)
+            .options(selectinload(Article.source))
+            .where(
+                Article.cluster_id.in_(cluster_ids),
+                Article.is_canonical == False,
+            )
+        )
+        rel_res = await db.execute(rel_stmt)
+        rel_articles = rel_res.scalars().all()
+        from app.schemas.schemas import RelatedSourceArticle
+
+        for rel in rel_articles:
+            item = RelatedSourceArticle(
+                id=rel.id,
+                title=rel.title,
+                source_name=rel.source.name if rel.source else "Nguồn khác",
+                url=rel.url,
+                published_at=rel.published_at,
+                vietnamese_title=rel.vietnamese_title,
+            )
+            related_map.setdefault(rel.cluster_id, []).append(item)
+
     output = []
     for art in articles:
         resp = ArticleResponse.model_validate(art)
         if art.source:
             resp.source_name = art.source.name
+        if art.cluster_id and art.cluster_id in related_map:
+            resp.related_articles = related_map[art.cluster_id]
         # Estimate reading time from raw_content or summary
         content_for_estimate = art.raw_content or art.vietnamese_summary or art.title
         resp.reading_time_minutes = calculate_reading_time(content_for_estimate)
