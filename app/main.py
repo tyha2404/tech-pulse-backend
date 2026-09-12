@@ -166,6 +166,34 @@ DEFAULT_SOURCES = [
         "source_type": "rss",
         "category": "Vietnam Tech",
     },
+    {
+        "name": "Viblo (Cộng đồng Lập trình Việt Nam)",
+        "url": "https://viblo.asia",
+        "feed_url": "https://viblo.asia/rss",
+        "source_type": "rss",
+        "category": "Vietnam Tech & Dev",
+    },
+    {
+        "name": "VietnamNet ICT & Công Nghệ",
+        "url": "https://vietnamnet.vn/thong-tin-truyen-thong",
+        "feed_url": "https://vietnamnet.vn/thong-tin-truyen-thong.rss",
+        "source_type": "rss",
+        "category": "Vietnam Tech",
+    },
+    {
+        "name": "Dân Trí (Sức Mạnh Số)",
+        "url": "https://dantri.com.vn/suc-manh-so.htm",
+        "feed_url": "https://dantri.com.vn/rss/cong-nghe.rss",
+        "source_type": "rss",
+        "category": "Vietnam Tech",
+    },
+    {
+        "name": "Tuổi Trẻ Công Nghệ",
+        "url": "https://tuoitre.vn/cong-nghe.htm",
+        "feed_url": "https://tuoitre.vn/cong-nghe.rss",
+        "source_type": "rss",
+        "category": "Vietnam Tech",
+    },
 ]
 
 scheduler = AsyncIOScheduler()
