@@ -247,6 +247,16 @@ async def lifespan(app: FastAPI):
                 except Exception as e:
                     print(f"Migration notice for {col}: {e}")
 
+        # Auto-migrate Story Clustering & Deduplication columns
+        try:
+            await conn.execute(text("ALTER TABLE articles ADD COLUMN IF NOT EXISTS cluster_id VARCHAR(100)"))
+            await conn.execute(text("ALTER TABLE articles ADD COLUMN IF NOT EXISTS is_canonical BOOLEAN DEFAULT TRUE"))
+            await conn.execute(text("ALTER TABLE articles ADD COLUMN IF NOT EXISTS cluster_topic_key VARCHAR(255)"))
+            await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_articles_cluster_id ON articles(cluster_id)"))
+            await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_articles_is_canonical ON articles(is_canonical)"))
+        except Exception as e:
+            print(f"Clustering migration notice: {e}")
+
     # Sync and seed default sources if any are missing
     async with AsyncSessionLocal() as db:
         existing_sources_res = await db.execute(select(Source.url))

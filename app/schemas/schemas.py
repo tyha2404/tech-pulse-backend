@@ -60,6 +60,18 @@ class ArticleUpdate(BaseModel):
     is_bookmarked: Optional[bool] = None
 
 
+class RelatedSourceArticle(BaseModel):
+    id: int
+    title: str
+    source_name: Optional[str] = None
+    url: str
+    published_at: Optional[datetime] = None
+    vietnamese_title: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
 class ArticleResponse(BaseModel):
     id: int
     source_id: Optional[int] = None
@@ -85,6 +97,10 @@ class ArticleResponse(BaseModel):
     nestjs_blueprint: Optional[NestJSBlueprint] = None
     learning_path: Optional[LearningPath] = None
     ai_model_used: Optional[str] = None
+    cluster_id: Optional[str] = None
+    is_canonical: bool = True
+    cluster_topic_key: Optional[str] = None
+    related_articles: List[RelatedSourceArticle] = []
     created_at: datetime
 
     class Config:

@@ -77,6 +77,11 @@ class Article(Base):
     learning_path = Column(JSON, default=dict)  # {prerequisites, recommended_next_topics}
     ai_model_used = Column(String(100), nullable=True)
 
+    # Story Clustering & Deduplication
+    cluster_id = Column(String(100), nullable=True, index=True)
+    is_canonical = Column(Boolean, default=True, index=True)
+    cluster_topic_key = Column(String(255), nullable=True, index=True)
+
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
     source = relationship("Source", back_populates="articles")
