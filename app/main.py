@@ -20,6 +20,111 @@ DEFAULT_SOURCES = [
         "category": "Backend & Tech",
     },
     {
+        "name": "ByteByteGo (Alex Xu)",
+        "url": "https://blog.bytebytego.com",
+        "feed_url": "https://blog.bytebytego.com/feed",
+        "source_type": "rss",
+        "category": "Backend Architecture",
+    },
+    {
+        "name": "Node Weekly",
+        "url": "https://nodeweekly.com",
+        "feed_url": "https://nodeweekly.com/rss",
+        "source_type": "rss",
+        "category": "Node & NestJS",
+    },
+    {
+        "name": "NestJS Releases (Kamil Mysliwiec)",
+        "url": "https://github.com/nestjs/nest",
+        "feed_url": "https://github.com/nestjs/nest/releases.atom",
+        "source_type": "rss",
+        "category": "Node & NestJS",
+    },
+    {
+        "name": "Prisma Blog",
+        "url": "https://www.prisma.io/blog",
+        "feed_url": "https://www.prisma.io/blog/rss.xml",
+        "source_type": "rss",
+        "category": "Backend & Database",
+    },
+    {
+        "name": "Lilian Weng (LilLog)",
+        "url": "https://lilianweng.github.io",
+        "feed_url": "https://lilianweng.github.io/index.xml",
+        "source_type": "rss",
+        "category": "AI Research & Agents",
+    },
+    {
+        "name": "Latent Space (AI Engineering)",
+        "url": "https://www.latent.space",
+        "feed_url": "https://www.latent.space/feed",
+        "source_type": "rss",
+        "category": "AI Engineering",
+    },
+    {
+        "name": "Vercel Blog (AI & TypeScript)",
+        "url": "https://vercel.com/blog",
+        "feed_url": "https://vercel.com/atom",
+        "source_type": "rss",
+        "category": "AI Engineering",
+    },
+    {
+        "name": "Qdrant Vector DB Blog",
+        "url": "https://qdrant.tech/blog",
+        "feed_url": "https://qdrant.tech/blog/index.xml",
+        "source_type": "rss",
+        "category": "AI & Vector DB",
+    },
+    {
+        "name": "Ollama Releases & Tooling",
+        "url": "https://github.com/ollama/ollama",
+        "feed_url": "https://github.com/ollama/ollama/releases.atom",
+        "source_type": "rss",
+        "category": "Local LLM & Inference",
+    },
+    {
+        "name": "Hugging Face Blog",
+        "url": "https://huggingface.co/blog",
+        "feed_url": "https://huggingface.co/blog/feed.xml",
+        "source_type": "rss",
+        "category": "AI Research & Models",
+    },
+    {
+        "name": "OpenAI News",
+        "url": "https://openai.com/news",
+        "feed_url": "https://openai.com/news/rss.xml",
+        "source_type": "rss",
+        "category": "AI Engineering",
+    },
+    {
+        "name": "Simon Willison Weblog (AI & MCP)",
+        "url": "https://simonwillison.net",
+        "feed_url": "https://simonwillison.net/atom/everything/",
+        "source_type": "rss",
+        "category": "AI Engineering",
+    },
+    {
+        "name": "The New Stack",
+        "url": "https://thenewstack.io",
+        "feed_url": "https://thenewstack.io/feed/",
+        "source_type": "rss",
+        "category": "Backend Architecture",
+    },
+    {
+        "name": "Martin Fowler Blog",
+        "url": "https://martinfowler.com",
+        "feed_url": "https://martinfowler.com/feed.atom",
+        "source_type": "rss",
+        "category": "Backend Architecture",
+    },
+    {
+        "name": "Netflix Tech Blog",
+        "url": "https://netflixtechblog.com",
+        "feed_url": "https://netflixtechblog.com/feed",
+        "source_type": "rss",
+        "category": "Backend Architecture",
+    },
+    {
         "name": "TechCrunch",
         "url": "https://techcrunch.com",
         "feed_url": "https://techcrunch.com/feed/",
@@ -39,13 +144,6 @@ DEFAULT_SOURCES = [
         "feed_url": "http://export.arxiv.org/rss/cs.AI",
         "source_type": "rss",
         "category": "AI Research",
-    },
-    {
-        "name": "Martin Fowler Blog",
-        "url": "https://martinfowler.com",
-        "feed_url": "https://martinfowler.com/feed.atom",
-        "source_type": "rss",
-        "category": "Backend Architecture",
     },
     {
         "name": "VnExpress Số Hóa",
@@ -90,6 +188,18 @@ async def lifespan(app: FastAPI):
     # Initialize DB schema
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # Migrate new columns if they do not exist
+        from sqlalchemy import text
+
+        for col in ["is_read", "is_hidden", "is_bookmarked"]:
+            try:
+                await conn.execute(
+                    text(
+                        f"ALTER TABLE articles ADD COLUMN IF NOT EXISTS {col} BOOLEAN DEFAULT FALSE"
+                    )
+                )
+            except Exception as e:
+                print(f"Migration notice for {col}: {e}")
 
     # Seed default sources if empty
     async with AsyncSessionLocal() as db:

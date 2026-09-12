@@ -59,6 +59,11 @@ class Article(Base):
     is_worth_reading = Column(Boolean, default=False)  # Filter out noise
     relevance_score = Column(Float, default=0.0)  # 1 - 10
 
+    # User Reading & Interaction State
+    is_read = Column(Boolean, default=False, index=True)
+    is_hidden = Column(Boolean, default=False, index=True)
+    is_bookmarked = Column(Boolean, default=False, index=True)
+
     vietnamese_title = Column(String(500), nullable=True)
     vietnamese_summary = Column(Text, nullable=True)
     key_takeaways = Column(JSON, default=list)  # List of strings
@@ -67,6 +72,9 @@ class Article(Base):
     )  # List of objects: [{name, category, desc}]
     tags = Column(JSON, default=list)  # ["Backend", "AI", "PostgreSQL", ...]
     target_audience = Column(JSON, default=list)
+    architectural_tradeoffs = Column(JSON, default=dict)  # {pros, cons, when_not_to_use, scalability_bottlenecks}
+    nestjs_blueprint = Column(JSON, default=dict)  # {architectural_pattern, suggested_module_structure, code_snippet, database_integration}
+    learning_path = Column(JSON, default=dict)  # {prerequisites, recommended_next_topics}
     ai_model_used = Column(String(100), nullable=True)
 
     created_at = Column(DateTime, default=datetime.datetime.utcnow)

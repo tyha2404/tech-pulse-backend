@@ -94,18 +94,23 @@ async def fetch_hacker_news() -> list[dict]:
         return items
 
 
-async def extract_clean_article_content(article_url: str) -> str:
+async def extract_clean_article_content(
+    article_url: str, max_length: int = 4000, output_format: str = "txt"
+) -> str:
     try:
         async with httpx.AsyncClient(
-            timeout=5.0, follow_redirects=True, headers=headers
+            timeout=10.0, follow_redirects=True, headers=headers
         ) as client:
             resp = await client.get(article_url)
             if resp.status_code == 200:
                 extracted = trafilatura.extract(
-                    resp.text, include_links=False, include_images=False
+                    resp.text,
+                    include_links=True,
+                    include_images=False,
+                    output_format=output_format,
                 )
                 if extracted:
-                    return extracted[:4000]
+                    return extracted[:max_length]
     except Exception:
         pass
     return ""
