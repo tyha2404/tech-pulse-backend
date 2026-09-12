@@ -427,6 +427,72 @@ async def chat_with_article_endpoint(
     )
 
 
+@router.get("/articles/{article_id}/related", response_model=List[RelatedArticleItem])
+async def get_related_articles(
+    article_id: int,
+    limit: int = 5,
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(Article)
+        .options(selectinload(Article.source))
+        .where(Article.id == article_id)
+    )
+    article = result.scalar_one_or_none()
+    if not article:
+        raise HTTPException(status_code=404, detail="Không tìm thấy bài viết")
+
+    current_tags = set([t.lower() for t in (article.tags or [])])
+    current_stacks = set([
+        s.get("name", "").lower()
+        for s in (article.new_tech_stacks or [])
+        if isinstance(s, dict)
+    ])
+    combined_topics = current_tags.union(current_stacks)
+
+    # Fetch recent candidate articles (not this article)
+    candidates_result = await db.execute(
+        select(Article)
+        .options(selectinload(Article.source))
+        .where(Article.id != article_id, Article.is_hidden == False)
+        .order_by(Article.relevance_score.desc(), Article.published_at.desc().nulls_last())
+        .limit(40)
+    )
+    candidates = candidates_result.scalars().all()
+
+    scored = []
+    for cand in candidates:
+        cand_tags = set([t.lower() for t in (cand.tags or [])])
+        cand_stacks = set([
+            s.get("name", "").lower()
+            for s in (cand.new_tech_stacks or [])
+            if isinstance(s, dict)
+        ])
+        cand_topics = cand_tags.union(cand_stacks)
+
+        # Count overlap
+        overlap = len(combined_topics.intersection(cand_topics))
+        if overlap > 0 or not combined_topics:
+            scored.append((overlap, cand.relevance_score, cand))
+
+    # Sort primarily by topic overlap, secondarily by relevance score
+    scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    top_picks = [item[2] for item in scored[:limit]]
+
+    return [
+        RelatedArticleItem(
+            id=a.id,
+            title=a.title,
+            vietnamese_title=a.vietnamese_title,
+            relevance_score=a.relevance_score,
+            tags=a.tags or [],
+            source_name=a.source.name if a.source else None,
+        )
+        for a in top_picks
+    ]
+
+
+
 @router.post("/crawl-all")
 async def trigger_crawl_all(background_tasks: BackgroundTasks):
     global crawl_status

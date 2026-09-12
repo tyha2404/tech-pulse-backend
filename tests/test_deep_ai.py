@@ -137,3 +137,42 @@ async def test_article_chat_copilot():
             data = r.json()
             assert "InjectQueue" in data["reply"]
             assert len(data["suggested_followups"]) == 2
+
+@pytest.mark.asyncio
+async def test_get_related_articles():
+    unique_key = str(int(datetime.datetime.now().timestamp()))
+    async with AsyncSessionLocal() as db:
+        art1 = Article(
+            title=f"NestJS Microservices Part 1 {unique_key}",
+            url=f"https://test.com/art1-{unique_key}",
+            tags=["NestJS", "Microservices", "Kafka"],
+            relevance_score=8.5,
+            published_at=datetime.datetime(2026, 9, 10),
+        )
+        art2 = Article(
+            title=f"NestJS Microservices Part 2 {unique_key}",
+            url=f"https://test.com/art2-{unique_key}",
+            tags=["NestJS", "Microservices", "RabbitMQ"],
+            relevance_score=9.0,
+            published_at=datetime.datetime(2026, 9, 11),
+        )
+        art3 = Article(
+            title=f"Cooking Recipes {unique_key}",
+            url=f"https://test.com/art3-{unique_key}",
+            tags=["Cooking", "Food"],
+            relevance_score=3.0,
+            published_at=datetime.datetime(2026, 9, 12),
+        )
+        db.add_all([art1, art2, art3])
+        await db.commit()
+        await db.refresh(art1)
+        await db.refresh(art2)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        r = await ac.get(f"/api/articles/{art1.id}/related")
+        assert r.status_code == 200
+        data = r.json()
+        assert len(data) >= 1
+        assert any(item["id"] == art2.id for item in data)
+        assert not any(item["id"] == art1.id for item in data)  # Does not include itself
