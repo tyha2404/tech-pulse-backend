@@ -176,3 +176,41 @@ async def test_get_related_articles():
         assert len(data) >= 1
         assert any(item["id"] == art2.id for item in data)
         assert not any(item["id"] == art1.id for item in data)  # Does not include itself
+
+@pytest.mark.asyncio
+async def test_weekly_radar_digest():
+    mock_digest = {
+        "week_label": "Tuần 37, 2026",
+        "dominant_trends": [
+            {
+                "topic": "Model Context Protocol (MCP)",
+                "status": "Adopt",
+                "summary": "Chuẩn hóa giao tiếp giữa AI Agents và hệ thống dữ liệu doanh nghiệp.",
+                "relevance": "Cực cao cho Backend NestJS Microservices"
+            },
+            {
+                "topic": "PostgreSQL 18 Async I/O & pgvector",
+                "status": "Trial",
+                "summary": "Tăng 30% throughput cho workload Vector Search.",
+                "relevance": "Thay thế direct vector DB cho quy mô vừa và lớn"
+            }
+        ],
+        "architectural_shifts": [
+            "Dịch chuyển từ monolithic LLM calls sang Multi-agent CQRS pipelines",
+            "Sử dụng hybrid lexical + dense vector retrieval thay vì thuần vector search"
+        ],
+        "actionable_recommendations": [
+            "Audit lại connection pool PostgreSQL khi dùng pgvector",
+            "Tích hợp BullMQ rate limiter trước khi gửi request tới AI gateways"
+        ]
+    }
+
+    with patch("app.api.endpoints.generate_weekly_radar_digest", return_value=mock_digest):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            r = await ac.get("/api/intelligence/radar-digest")
+            assert r.status_code == 200
+            data = r.json()
+            assert data["week_label"] == "Tuần 37, 2026"
+            assert len(data["dominant_trends"]) >= 1
+            assert len(data["architectural_shifts"]) >= 1

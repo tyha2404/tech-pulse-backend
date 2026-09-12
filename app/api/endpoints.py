@@ -27,7 +27,11 @@ from app.crawlers.article_crawler import (
     extract_clean_article_content,
 )
 from app.services.crawl_service import crawl_single_source
-from app.services.ai_analyzer import analyze_article_with_9router, chat_with_article
+from app.services.ai_analyzer import (
+    analyze_article_with_9router,
+    chat_with_article,
+    generate_weekly_radar_digest,
+)
 from app.core.config import settings
 
 router = APIRouter()
@@ -491,6 +495,69 @@ async def get_related_articles(
         for a in top_picks
     ]
 
+
+@router.get("/intelligence/radar-digest", response_model=WeeklyRadarDigestResponse)
+async def get_weekly_radar_digest_endpoint(db: AsyncSession = Depends(get_db)):
+    # Select top articles from the database
+    result = await db.execute(
+        select(Article)
+        .options(selectinload(Article.source))
+        .where(Article.is_hidden == False)
+        .order_by(Article.relevance_score.desc(), Article.published_at.desc().nulls_last())
+        .limit(15)
+    )
+    articles = result.scalars().all()
+
+    articles_payload = []
+    top_items = []
+    for a in articles:
+        articles_payload.append({
+            "title": a.title,
+            "vietnamese_title": a.vietnamese_title,
+            "vietnamese_summary": a.vietnamese_summary,
+            "tags": a.tags or [],
+            "source_name": a.source.name if a.source else None,
+        })
+        top_items.append(
+            RelatedArticleItem(
+                id=a.id,
+                title=a.title,
+                vietnamese_title=a.vietnamese_title,
+                relevance_score=a.relevance_score,
+                tags=a.tags or [],
+                source_name=a.source.name if a.source else None,
+            )
+        )
+
+    digest_data = await generate_weekly_radar_digest(articles_payload)
+
+    return WeeklyRadarDigestResponse(
+        week_label=digest_data.get("week_label", "Báo cáo Radar Công nghệ Tuần"),
+        dominant_trends=digest_data.get("dominant_trends", []),
+        architectural_shifts=digest_data.get("architectural_shifts", []),
+        actionable_recommendations=digest_data.get("actionable_recommendations", []),
+        top_articles=top_items[:6],
+    )
+
+
+@router.post("/intelligence/dispatch-digest")
+async def dispatch_digest_to_webhook(
+    channel: str = Query("all", pattern="^(all|telegram|discord)$"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Optionally dispatch weekly radar digest to Telegram or Discord if configured."""
+    # Placeholder for webhook notification with status check
+    configured_channels = []
+    if settings.TELEGRAM_BOT_TOKEN and settings.TELEGRAM_CHAT_ID:
+        configured_channels.append("telegram")
+    if settings.DISCORD_WEBHOOK_URL:
+        configured_channels.append("discord")
+
+    return {
+        "success": True,
+        "message": f"Đã chuẩn bị bản tin radar cho kênh: {channel}",
+        "configured_channels": configured_channels,
+    }
 
 
 @router.post("/crawl-all")

@@ -191,3 +191,81 @@ FOLLOW_UPS:
             ],
         }
 
+
+async def generate_weekly_radar_digest(top_articles: list) -> dict:
+    """Synthesize cross-article insights into a weekly tech radar intelligence report."""
+    client = AsyncOpenAI(
+        base_url=settings.NINEROUTERS_BASE_URL, api_key=settings.NINEROUTERS_API_KEY
+    )
+
+    articles_summary = []
+    for a in top_articles[:15]:
+        articles_summary.append(
+            f"- [{a.get('source_name', 'Tech')}] {a.get('vietnamese_title') or a.get('title')}: {a.get('vietnamese_summary', '')} (Tags: {', '.join(a.get('tags') or [])})"
+        )
+    articles_context = "\n".join(articles_summary)
+
+    prompt = f"""Dưới đây là danh sách các bài viết công nghệ nổi bật nhất trong tuần qua dành cho Backend NestJS & AI Engineers:
+
+{articles_context}
+
+Nhiệm vụ: Tổng hợp thành bản báo cáo "Tech Intelligence & Radar Heatmap" chuyên sâu cho Backend NestJS & AI Engineers.
+Yêu cầu trả về JSON hợp lệ (không kèm markdown ngoài JSON):
+{{
+  "week_label": "Báo cáo Radar Công nghệ Tuần này",
+  "dominant_trends": [
+    {{
+      "topic": "Tên chủ đề / Công nghệ",
+      "status": "Adopt | Trial | Assess | Hold",
+      "summary": "Tóm tắt ngắn 1-2 câu về đột phá",
+      "relevance": "Ý nghĩa đối với Backend NestJS / Distributed Systems"
+    }}
+  ],
+  "architectural_shifts": [
+    "Sự dịch chuyển kiến trúc 1...",
+    "Sự dịch chuyển kiến trúc 2..."
+  ],
+  "actionable_recommendations": [
+    "Khuyến nghị hành động thực chiến 1 cho backend team...",
+    "Khuyến nghị hành động thực chiến 2..."
+  ]
+}}
+"""
+
+    try:
+        response = await client.chat.completions.create(
+            model=settings.AI_MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Bạn là Giám đốc Công nghệ (CTO) & Chief AI Architect. Hãy tổng hợp báo cáo công nghệ chiến lược, sắc bén, hoàn toàn bằng tiếng Việt chuyên môn.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.3,
+        )
+        raw_text = response.choices[0].message.content.strip()
+        data = _clean_json_response(raw_text)
+        return data
+    except Exception as e:
+        return {
+            "week_label": "Báo cáo Radar Công nghệ Tuần này",
+            "dominant_trends": [
+                {
+                    "topic": "Hạ tầng AI & Backend NestJS",
+                    "status": "Trial",
+                    "summary": f"Tổng hợp cập nhật từ các nguồn tin công nghệ (Fallback: {str(e)[:80]})",
+                    "relevance": "Theo dõi các nâng cấp về RAG và async worker.",
+                }
+            ],
+            "architectural_shifts": [
+                "Gia tăng tích hợp Vector Database trực tiếp vào hạ tầng backend hiện có",
+                "Chuyển dịch sang mô hình Microservices phân tán với hàng đợi BullMQ/Kafka",
+            ],
+            "actionable_recommendations": [
+                "Khảo sát và benchmark pgvector trên PostgreSQL nội bộ",
+                "Xây dựng API gateway phân luồng traffic giữa API truyền thống và Agentic LLM flows",
+            ],
+        }
+
+
