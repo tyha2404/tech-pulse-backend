@@ -201,6 +201,24 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 print(f"Migration notice for {col}: {e}")
 
+        # Auto-migrate deep AI columns (Postgres JSON or SQLite TEXT/JSON)
+        for col in ["architectural_tradeoffs", "nestjs_blueprint", "learning_path"]:
+            try:
+                await conn.execute(
+                    text(
+                        f"ALTER TABLE articles ADD COLUMN IF NOT EXISTS {col} JSON DEFAULT '{{}}'::json"
+                    )
+                )
+            except Exception:
+                try:
+                    await conn.execute(
+                        text(
+                            f"ALTER TABLE articles ADD COLUMN IF NOT EXISTS {col} JSON DEFAULT '{{}}'"
+                        )
+                    )
+                except Exception as e:
+                    print(f"Migration notice for {col}: {e}")
+
     # Seed default sources if empty
     async with AsyncSessionLocal() as db:
         count_res = await db.execute(select(Source))
