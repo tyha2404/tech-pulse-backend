@@ -201,7 +201,9 @@ FOLLOW_UPS:
 async def generate_weekly_radar_digest(top_articles: list) -> dict:
     """Synthesize cross-article insights into a weekly tech radar intelligence report."""
     client = AsyncOpenAI(
-        base_url=settings.NINEROUTERS_BASE_URL, api_key=settings.NINEROUTERS_API_KEY
+        base_url=settings.NINEROUTERS_BASE_URL,
+        api_key=settings.NINEROUTERS_API_KEY,
+        timeout=35.0,
     )
 
     articles_summary = []

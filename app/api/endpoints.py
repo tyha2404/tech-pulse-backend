@@ -534,8 +534,23 @@ async def get_related_articles(
     ]
 
 
+# In-memory cache for Radar Digest: {"data": WeeklyRadarDigestResponse, "expires_at": float}
+_radar_cache = {"data": None, "expires_at": 0.0}
+
+
 @router.get("/intelligence/radar-digest", response_model=WeeklyRadarDigestResponse)
-async def get_weekly_radar_digest_endpoint(db: AsyncSession = Depends(get_db)):
+async def get_weekly_radar_digest_endpoint(
+    force_refresh: bool = False,
+    db: AsyncSession = Depends(get_db),
+):
+    import time
+    global _radar_cache
+    now = time.time()
+
+    # Return cached result if still valid and not force refreshing
+    if not force_refresh and _radar_cache["data"] is not None and now < _radar_cache["expires_at"]:
+        return _radar_cache["data"]
+
     # Select top articles from the database
     result = await db.execute(
         select(Article)
@@ -569,13 +584,19 @@ async def get_weekly_radar_digest_endpoint(db: AsyncSession = Depends(get_db)):
 
     digest_data = await generate_weekly_radar_digest(articles_payload)
 
-    return WeeklyRadarDigestResponse(
+    response = WeeklyRadarDigestResponse(
         week_label=digest_data.get("week_label", "Báo cáo Radar Công nghệ Tuần"),
         dominant_trends=digest_data.get("dominant_trends", []),
         architectural_shifts=digest_data.get("architectural_shifts", []),
         actionable_recommendations=digest_data.get("actionable_recommendations", []),
         top_articles=top_items[:6],
     )
+
+    # Cache for 60 minutes (3600 seconds)
+    _radar_cache["data"] = response
+    _radar_cache["expires_at"] = now + 3600.0
+
+    return response
 
 
 @router.post("/intelligence/dispatch-digest")
