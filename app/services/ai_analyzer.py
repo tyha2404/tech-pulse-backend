@@ -11,9 +11,9 @@ Bạn cần:
    - ƯU TIÊN CAO (8.0 - 10.0): Các cập nhật công nghệ mới thực tiễn, tính năng mới ra mắt của các AI Labs/công ty lớn, xu hướng công nghệ sắp tới (AI Agents, Reasoning Models, Multimodal, On-Device AI), công cụ và ứng dụng thực tế dễ tiếp cận.
    - TRỪ ĐIỂM NẶNG (dưới 5.0): Các bài báo học thuật thuần lý thuyết hàn lâm, ngập tràn công thức toán học/chứng minh định lý phức tạp (như paper ArXiv lý thuyết), khó áp dụng ngay cho thực tế hoặc thiếu tính đại chúng. Đồng thời trừ điểm các bài PR rác, quảng cáo nông cạn.
 2. Xác định `is_worth_reading` (true nếu relevance_score >= 7.0).
-3. Đặt `vietnamese_title`: Tiêu đề tiếng Việt ngắn gọn, chuyên nghiệp, hấp dẫn, dễ hiểu.
-4. Viết `vietnamese_summary`: Tóm tắt 3-5 câu cô đọng giá trị cốt lõi nhất bằng ngôn từ sáng rõ, dễ hiểu, tránh thuật ngữ hàn lâm trừ tượng không cần thiết. Trả lời rõ: Công nghệ này giải quyết vấn đề gì và xu hướng sắp tới ra sao?
-5. Rút ra `key_takeaways`: Danh sách 3-5 bài học/điểm lưu ý kỹ thuật mà kỹ sư Backend/AI cần biết.
+3. Đặt `vietnamese_title`: Tiêu đề tiếng Việt ngắn gọn, chuyên nghiệp, hấp dẫn, dễ hiểu. TUYỆT ĐỐI KHÔNG sử dụng ký tự tiếng Trung, tiếng Nhật.
+4. Viết `vietnamese_summary`: Tóm tắt 3-5 câu cô đọng giá trị cốt lõi nhất bằng 100% tiếng Việt chuẩn, sáng rõ, dễ hiểu, tránh thuật ngữ hàn lâm trừu tượng không cần thiết. NGHIÊM CẤM xuất hiện chữ Hán/ký tự tiếng Trung Quốc trong bản tóm tắt. Trả lời rõ: Công nghệ này giải quyết vấn đề gì và xu hướng sắp tới ra sao?
+5. Rút ra `key_takeaways`: Danh sách 3-5 bài học/điểm lưu ý kỹ thuật mà kỹ sư Backend/AI cần biết (100% tiếng Việt).
 6. Trích xuất `new_tech_stack`: Các công nghệ, framework, library, DB, kiến trúc mới xuất hiện trong bài kèm mô tả ngắn.
 7. Gắn `tags`: Ví dụ ["NestJS", "AI/LLM", "PostgreSQL", "pgvector", "System Design", "Microservices", "TypeScript"].
 8. `target_audience`: Ví dụ ["Backend NestJS Engineer", "AI Systems Engineer", "Tech Lead"].
@@ -246,7 +246,7 @@ Yêu cầu trả về JSON hợp lệ (không kèm markdown ngoài JSON):
             messages=[
                 {
                     "role": "system",
-                    "content": "Bạn là Giám đốc Công nghệ (CTO) & Chief AI Architect. Hãy tổng hợp báo cáo công nghệ chiến lược, sắc bén, hoàn toàn bằng tiếng Việt chuyên môn.",
+                    "content": "Bạn là Giám đốc Công nghệ (CTO) & Chief AI Architect. Hãy tổng hợp báo cáo công nghệ chiến lược, sắc bén, hoàn toàn bằng 100% tiếng Việt chuẩn. TUYỆT ĐỐI KHÔNG xuất hiện bất kỳ ký tự chữ Hán/tiếng Trung Quốc nào trong phản hồi.",
                 },
                 {"role": "user", "content": prompt},
             ],
