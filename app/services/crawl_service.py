@@ -111,6 +111,20 @@ async def crawl_single_source(
                 if demoted_article:
                     demoted_article.is_canonical = False
 
+            # Smart Telegram Notification Trigger
+            try:
+                cluster_sources = []
+                if article.cluster_id:
+                    # Find all distinct source names in this cluster
+                    c_res = await db.execute(
+                        select(Article).options(selectinload(Article.source)).where(Article.cluster_id == article.cluster_id)
+                    )
+                    c_articles = c_res.scalars().all()
+                    cluster_sources = [a.source.name for a in c_articles if a.source and a.source.name]
+                await trigger_smart_article_notifications(article, cluster_sources=cluster_sources)
+            except Exception as noti_err:
+                print(f"Notification error: {noti_err}")
+
             db.add(article)
             await db.commit()  # Commit each article safely
             articles_added += 1
@@ -121,14 +135,6 @@ async def crawl_single_source(
         source.last_error = None
         source.articles_count = (source.articles_count or 0) + articles_added
         await db.commit()
-
-        # Webhook notifications if telegram or discord configured
-        if articles_added > 0 and (
-            settings.TELEGRAM_BOT_TOKEN or settings.DISCORD_WEBHOOK_URL
-        ):
-            await notify_webhook(
-                f"🚀 TechPulse: Vừa cào được {articles_added} bài mới từ nguồn '{source.name}'!"
-            )
 
     except Exception as e:
         await db.rollback()
@@ -143,17 +149,48 @@ async def crawl_single_source(
     return articles_added
 
 
-async def notify_webhook(message: str):
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            if settings.TELEGRAM_BOT_TOKEN and settings.TELEGRAM_CHAT_ID:
-                tg_url = f"https://api.telegram.org/bot{settings.TELEGRAM_BOT_TOKEN}/sendMessage"
-                await client.post(
-                    tg_url, json={"chat_id": settings.TELEGRAM_CHAT_ID, "text": message}
-                )
-            if settings.DISCORD_WEBHOOK_URL:
-                await client.post(
-                    settings.DISCORD_WEBHOOK_URL, json={"content": message}
-                )
-    except Exception:
-        pass
+async def trigger_smart_article_notifications(article: Article, cluster_sources: List[str] = []):
+    """
+    Intelligently routes notifications:
+    1. If cluster has >= 3 distinct sources -> Breaking Cluster Alert
+    2. Else if article is canonical and relevance_score >= 7.5 -> Elite Article Alert
+    """
+    from app.services.telegram_service import (
+        format_elite_article_message,
+        format_cluster_alert_message,
+        send_telegram_message,
+    )
+
+    # 1. Breaking Cluster Alert
+    unique_sources = list(dict.fromkeys(cluster_sources))
+    if article.is_canonical and len(unique_sources) >= 3:
+        cluster_data = {
+            "title": article.vietnamese_title or article.title,
+            "sources": unique_sources,
+            "summary": article.vietnamese_summary or "Đang được nhiều nguồn uy tín đưa tin.",
+            "url": article.url,
+        }
+        msg, markup = format_cluster_alert_message(cluster_data)
+        await send_telegram_message(msg, reply_markup=markup)
+        return
+
+    # 2. Elite Article Alert
+    if article.is_canonical and (article.relevance_score or 0.0) >= 7.5:
+        # Estimate reading time
+        content_for_estimate = article.raw_content or article.vietnamese_summary or article.title
+        reading_time = max(1, round(len(content_for_estimate.split()) / 200)) if content_for_estimate else 3
+
+        data = {
+            "id": article.id,
+            "title": article.title,
+            "vietnamese_title": article.vietnamese_title,
+            "vietnamese_summary": article.vietnamese_summary,
+            "relevance_score": article.relevance_score,
+            "source_name": article.source.name if article.source else "TechPulse",
+            "reading_time_minutes": reading_time,
+            "key_takeaways": article.key_takeaways or [],
+            "tags": article.tags or [],
+            "url": article.url,
+        }
+        msg, markup = format_elite_article_message(data)
+        await send_telegram_message(msg, reply_markup=markup)
