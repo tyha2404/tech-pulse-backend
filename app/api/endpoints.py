@@ -15,6 +15,10 @@ from app.schemas.schemas import (
     ArticleUpdate,
     CrawlTestResult,
     ReaderModeResponse,
+    ArticleChatRequest,
+    ArticleChatResponse,
+    RelatedArticleItem,
+    WeeklyRadarDigestResponse,
 )
 from app.crawlers.feed_discoverer import discover_feed_url
 from app.crawlers.article_crawler import (
@@ -23,7 +27,7 @@ from app.crawlers.article_crawler import (
     extract_clean_article_content,
 )
 from app.services.crawl_service import crawl_single_source
-from app.services.ai_analyzer import analyze_article_with_9router
+from app.services.ai_analyzer import analyze_article_with_9router, chat_with_article
 from app.core.config import settings
 
 router = APIRouter()
@@ -369,6 +373,12 @@ async def summarize_article_on_demand(
     article.new_tech_stacks = [ts.model_dump() for ts in analysis.new_tech_stack]
     article.tags = analysis.tags
     article.target_audience = analysis.target_audience
+    if analysis.architectural_tradeoffs:
+        article.architectural_tradeoffs = analysis.architectural_tradeoffs.model_dump()
+    if analysis.nestjs_blueprint:
+        article.nestjs_blueprint = analysis.nestjs_blueprint.model_dump()
+    if analysis.learning_path:
+        article.learning_path = analysis.learning_path.model_dump()
     article.ai_model_used = settings.AI_MODEL
 
     await db.commit()
@@ -381,6 +391,40 @@ async def summarize_article_on_demand(
         article.raw_content or article.vietnamese_summary or article.title
     )
     return resp
+
+
+@router.post("/articles/{article_id}/chat", response_model=ArticleChatResponse)
+async def chat_with_article_endpoint(
+    article_id: int,
+    payload: ArticleChatRequest = Body(...),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(Article)
+        .options(selectinload(Article.source))
+        .where(Article.id == article_id)
+    )
+    article = result.scalar_one_or_none()
+    if not article:
+        raise HTTPException(status_code=404, detail="Không tìm thấy bài viết")
+
+    content_for_chat = (
+        article.raw_content
+        or (f"{article.vietnamese_summary or ''}\n\nTakeaways: {', '.join(article.key_takeaways or [])}")
+        or article.title
+    )
+
+    chat_res = await chat_with_article(
+        article_title=article.vietnamese_title or article.title,
+        article_content=content_for_chat,
+        user_message=payload.message,
+        history=payload.history,
+    )
+
+    return ArticleChatResponse(
+        reply=chat_res.get("reply", ""),
+        suggested_followups=chat_res.get("suggested_followups", []),
+    )
 
 
 @router.post("/crawl-all")

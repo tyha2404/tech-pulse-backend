@@ -97,3 +97,43 @@ async def test_ai_analyzer_deep_fields_parsing():
         assert res.nestjs_blueprint is not None
         assert "VectorSearchService" in res.nestjs_blueprint.code_snippet
         assert "NestJS Dependency Injection" in res.learning_path.prerequisites
+
+from httpx import AsyncClient, ASGITransport
+from app.main import app
+from app.models.models import Article
+from app.core.database import AsyncSessionLocal
+import datetime
+
+@pytest.mark.asyncio
+async def test_article_chat_copilot():
+    unique_key = str(int(datetime.datetime.now().timestamp()))
+    async with AsyncSessionLocal() as db:
+        art = Article(
+            title=f"NestJS BullMQ Worker Test {unique_key}",
+            url=f"https://test.com/bullmq-{unique_key}",
+            raw_content="NestJS with BullMQ provides robust queue processing and rate limiting.",
+            published_at=datetime.datetime(2026, 9, 12),
+        )
+        db.add(art)
+        await db.commit()
+        await db.refresh(art)
+
+    mock_chat_result = {
+        "reply": "Để áp dụng BullMQ trong NestJS, bạn inject `@InjectQueue('tasks')` vào service và cấu hình Redis connection pooling.",
+        "suggested_followups": [
+            "Cách xử lý retry backoff trong BullMQ?",
+            "Làm sao scale nhiều consumer pods với Redis cluster?"
+        ]
+    }
+
+    with patch("app.api.endpoints.chat_with_article", return_value=mock_chat_result):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            r = await ac.post(f"/api/articles/{art.id}/chat", json={
+                "message": "Làm thế nào để áp dụng BullMQ vào NestJS?",
+                "history": []
+            })
+            assert r.status_code == 200
+            data = r.json()
+            assert "InjectQueue" in data["reply"]
+            assert len(data["suggested_followups"]) == 2
