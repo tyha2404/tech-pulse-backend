@@ -285,9 +285,22 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(
         scheduled_crawl_job, "interval", minutes=settings.CRAWL_INTERVAL_MINUTES
     )
+
+    # Schedule Daily Espresso Briefings via Telegram
+    from app.services.telegram_service import dispatch_daily_espresso_digest
+
+    async def morning_espresso_cron():
+        await dispatch_daily_espresso_digest("☕ Morning Tech Espresso (8:00 AM)")
+
+    async def evening_briefing_cron():
+        await dispatch_daily_espresso_digest("🌇 Evening Tech Briefing (18:00 PM)")
+
+    scheduler.add_job(morning_espresso_cron, "cron", hour=8, minute=0, id="morning_espresso")
+    scheduler.add_job(evening_briefing_cron, "cron", hour=18, minute=0, id="evening_briefing")
+
     scheduler.start()
     print(
-        f"🚀 Scheduler started: Running every {settings.CRAWL_INTERVAL_MINUTES} minutes."
+        f"🚀 Scheduler started: Running crawl every {settings.CRAWL_INTERVAL_MINUTES} minutes, Espresso briefings at 08:00 & 18:00."
     )
 
     yield
