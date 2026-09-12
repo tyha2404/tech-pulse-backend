@@ -454,13 +454,16 @@ async def get_related_articles(
     ])
     combined_topics = current_tags.union(current_stacks)
 
-    # Fetch recent candidate articles (not this article)
+    # Fetch candidate articles (not this article)
     candidates_result = await db.execute(
         select(Article)
         .options(selectinload(Article.source))
-        .where(Article.id != article_id, Article.is_hidden == False)
-        .order_by(Article.relevance_score.desc(), Article.published_at.desc().nulls_last())
-        .limit(40)
+        .where(
+            Article.id != article_id,
+            (Article.is_hidden == False) | (Article.is_hidden.is_(None)),
+        )
+        .order_by(Article.id.desc())
+        .limit(200)
     )
     candidates = candidates_result.scalars().all()
 
@@ -474,7 +477,6 @@ async def get_related_articles(
         ])
         cand_topics = cand_tags.union(cand_stacks)
 
-        # Count overlap
         overlap = len(combined_topics.intersection(cand_topics))
         if overlap > 0 or not combined_topics:
             scored.append((overlap, cand.relevance_score, cand))

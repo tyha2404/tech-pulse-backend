@@ -219,11 +219,14 @@ async def lifespan(app: FastAPI):
                 except Exception as e:
                     print(f"Migration notice for {col}: {e}")
 
-    # Seed default sources if empty
+    # Sync and seed default sources if any are missing
     async with AsyncSessionLocal() as db:
-        count_res = await db.execute(select(Source))
-        if not count_res.scalars().first():
-            for src_data in DEFAULT_SOURCES:
+        existing_sources_res = await db.execute(select(Source.url))
+        existing_urls = set(existing_sources_res.scalars().all())
+
+        new_sources_added = 0
+        for src_data in DEFAULT_SOURCES:
+            if src_data["url"] not in existing_urls:
                 source = Source(
                     name=src_data["name"],
                     url=src_data["url"],
@@ -233,8 +236,12 @@ async def lifespan(app: FastAPI):
                     status="healthy",
                 )
                 db.add(source)
+                existing_urls.add(src_data["url"])
+                new_sources_added += 1
+
+        if new_sources_added > 0:
             await db.commit()
-            print("🌱 Initialized default tech news sources successfully!")
+            print(f"🌱 Đã tự động đồng bộ thêm {new_sources_added} nguồn tin công nghệ mới vào cơ sở dữ liệu!")
 
     # Start scheduler
     scheduler.add_job(

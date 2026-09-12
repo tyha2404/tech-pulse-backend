@@ -141,18 +141,19 @@ async def test_article_chat_copilot():
 @pytest.mark.asyncio
 async def test_get_related_articles():
     unique_key = str(int(datetime.datetime.now().timestamp()))
+    tag_match = f"Tag_{unique_key}"
     async with AsyncSessionLocal() as db:
         art1 = Article(
             title=f"NestJS Microservices Part 1 {unique_key}",
             url=f"https://test.com/art1-{unique_key}",
-            tags=["NestJS", "Microservices", "Kafka"],
+            tags=["NestJS", tag_match, "Kafka"],
             relevance_score=8.5,
             published_at=datetime.datetime(2026, 9, 10),
         )
         art2 = Article(
             title=f"NestJS Microservices Part 2 {unique_key}",
             url=f"https://test.com/art2-{unique_key}",
-            tags=["NestJS", "Microservices", "RabbitMQ"],
+            tags=["NestJS", tag_match, "RabbitMQ"],
             relevance_score=9.0,
             published_at=datetime.datetime(2026, 9, 11),
         )
