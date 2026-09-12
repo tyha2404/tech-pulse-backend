@@ -3,8 +3,8 @@ from openai import AsyncOpenAI
 from app.core.config import settings
 from app.schemas.schemas import AIAnalysisResult
 
-SYSTEM_PROMPT = """Bạn là một Chuyên gia Công nghệ Cấp cao kiêm Kiến trúc sư Hệ thống (Principal Backend & AI Systems Engineer).
-Nhiệm vụ của bạn là đọc nội dung bài viết kỹ thuật và phân tích cho cộng đồng kỹ sư Backend & AI.
+SYSTEM_PROMPT = """Bạn là một Chuyên gia Công nghệ Cấp cao kiêm Kiến trúc sư Hệ thống (Principal Backend & AI Systems Engineer), chuyên sâu về NestJS, TypeScript, Microservices, Distributed Systems và Hạ tầng AI (LLMs, Vector DBs, RAG, Agentic Workflows).
+Nhiệm vụ của bạn là đọc nội dung bài viết kỹ thuật và phân tích chuyên sâu cho cộng đồng kỹ sư Backend NestJS & AI.
 
 Bạn cần:
 1. Đánh giá `relevance_score` (thang điểm 1.0 - 10.0) dựa trên mức độ chuyên sâu kỹ thuật, tính thực tiễn, tính thời sự (về AI/LLMs, Distributed Systems, Database, Cloud Native, Tech Stack mới). Trừ điểm nặng các bài quảng cáo sản phẩm hời hợt, tin giật gân, hoặc bài PR nông cạn.
@@ -13,27 +13,71 @@ Bạn cần:
 4. Viết `vietnamese_summary`: Tóm tắt 3-5 câu cô đọng giá trị cốt lõi nhất.
 5. Rút ra `key_takeaways`: Danh sách 3-5 bài học/điểm lưu ý kỹ thuật mà kỹ sư Backend/AI cần biết.
 6. Trích xuất `new_tech_stack`: Các công nghệ, framework, library, DB, kiến trúc mới xuất hiện trong bài kèm mô tả ngắn.
-7. Gắn `tags`: Ví dụ ["AI/LLM", "PostgreSQL", "System Design", "Microservices", "Go", "Python", "Kubernetes", "DevOps"].
-8. `target_audience`: Ví dụ ["Backend Engineer", "AI Engineer", "DevOps", "Architect"].
+7. Gắn `tags`: Ví dụ ["NestJS", "AI/LLM", "PostgreSQL", "pgvector", "System Design", "Microservices", "TypeScript"].
+8. `target_audience`: Ví dụ ["Backend NestJS Engineer", "AI Systems Engineer", "Tech Lead"].
+9. Phân tích `architectural_tradeoffs` (Đánh đổi kiến trúc):
+   - `pros`: Ưu điểm kỹ thuật thực tế.
+   - `cons`: Nhược điểm, chi phí vận hành, tài nguyên.
+   - `when_not_to_use`: Các trường hợp cụ thể KHÔNG NÊN áp dụng để tránh over-engineering hoặc lãng phí tài nguyên.
+   - `scalability_bottlenecks`: Điểm nghẽn hiệu năng khi tải cao / dữ liệu phình to.
+10. Thiết kế `nestjs_blueprint` (Gợi ý hiện thực hóa trong hệ sinh thái NestJS / Node.js):
+   - `architectural_pattern`: Pattern khuyên dùng (ví dụ: "Hexagonal / Ports & Adapters", "CQRS with Event Sourcing", "Repository & Service Pattern").
+   - `suggested_module_structure`: Đường dẫn file/thư mục NestJS gợi ý.
+   - `code_snippet`: Đoạn code TypeScript / NestJS mẫu (Module/Service/Guard/Interceptor/Prisma) cụ thể, sạch sẽ, chuẩn production.
+   - `database_integration`: Gợi ý tích hợp DB (ví dụ: Prisma ORM với pgvector, TypeORM, Redis cache, BullMQ queue).
+11. Xây dựng `learning_path`:
+   - `prerequisites`: Các kiến thức nền tảng cần biết trước khi đọc bài này.
+   - `recommended_next_topics`: Các chủ đề chuyên sâu nên đào sâu tiếp theo.
 
-Trả về kết quả DUY NHẤT dưới dạng JSON hợp lệ (không kèm markdown code block thừa, hoặc đặt trong ```json):
+Trả về kết quả DUY NHẤT dưới dạng JSON hợp lệ (không kèm markdown thừa hoặc đặt trong ```json):
 {
   "relevance_score": 8.5,
   "is_worth_reading": true,
-  "target_audience": ["Backend Engineer", "AI Engineer"],
+  "target_audience": ["Backend NestJS Engineer", "AI Engineer"],
   "vietnamese_title": "...",
   "vietnamese_summary": "...",
   "key_takeaways": ["...", "..."],
   "new_tech_stack": [{"name": "...", "category": "...", "desc": "..."}],
-  "tags": ["..."]
+  "tags": ["..."],
+  "architectural_tradeoffs": {
+    "pros": ["..."],
+    "cons": ["..."],
+    "when_not_to_use": ["..."],
+    "scalability_bottlenecks": ["..."]
+  },
+  "nestjs_blueprint": {
+    "architectural_pattern": "...",
+    "suggested_module_structure": "...",
+    "code_snippet": "...",
+    "database_integration": "..."
+  },
+  "learning_path": {
+    "prerequisites": ["..."],
+    "recommended_next_topics": ["..."]
+  }
 }
 """
+
+
+def _clean_json_response(raw_text: str) -> dict:
+    cleaned = raw_text.strip()
+    if "```" in cleaned:
+        parts = cleaned.split("```")
+        for i in range(1, len(parts), 2):
+            block = parts[i].strip()
+            if block.startswith("json"):
+                block = block[4:].strip()
+            try:
+                return json.loads(block)
+            except Exception:
+                continue
+    # Try direct parse
+    return json.loads(cleaned)
 
 
 async def analyze_article_with_9router(
     title: str, content: str, url: str
 ) -> AIAnalysisResult:
-    # Connect to local 9router gateway
     client = AsyncOpenAI(
         base_url=settings.NINEROUTERS_BASE_URL, api_key=settings.NINEROUTERS_API_KEY
     )
@@ -54,15 +98,7 @@ NỘI DUNG:
             temperature=0.3,
         )
         raw_answer = response.choices[0].message.content.strip()
-
-        # Clean JSON if model returns ```json ... ```
-        if "```" in raw_answer:
-            cleaned = raw_answer.split("```")[1]
-            if cleaned.startswith("json"):
-                cleaned = cleaned[4:].strip()
-            raw_answer = cleaned.split("```")[0].strip()
-
-        data = json.loads(raw_answer)
+        data = _clean_json_response(raw_answer)
         return AIAnalysisResult(**data)
     except Exception as e:
         # Graceful fallback if 9router is temporarily offline or model fails
@@ -75,4 +111,83 @@ NỘI DUNG:
             key_takeaways=["Xem chi tiết bài viết tại liên kết gốc."],
             new_tech_stack=[],
             tags=["Tech"],
+            architectural_tradeoffs=None,
+            nestjs_blueprint=None,
+            learning_path=None,
         )
+
+
+async def chat_with_article(
+    article_title: str,
+    article_content: str,
+    user_message: str,
+    history: list = None,
+) -> dict:
+    """Multi-turn technical Q&A with Senior NestJS & AI Architect persona."""
+    client = AsyncOpenAI(
+        base_url=settings.NINEROUTERS_BASE_URL, api_key=settings.NINEROUTERS_API_KEY
+    )
+
+    system_instruction = f"""Bạn là một Principal Backend Engineer & AI Systems Architect, chuyên gia về NestJS, TypeScript, Microservices, RAG và AI Engineering.
+Bạn đang hỗ trợ một lập trình viên thảo luận và đào sâu về bài viết kỹ thuật sau:
+
+TIÊU ĐỀ: {article_title}
+NỘI DUNG TÓM TẮT & BÀI VIẾT:
+{article_content[:6000]}
+
+Mục tiêu của bạn:
+1. Giải đáp các thắc mắc kỹ thuật thực tế dựa trên nội dung bài viết.
+2. Nếu người dùng hỏi cách áp dụng, hãy cung cấp kiến trúc và code TypeScript/NestJS mẫu chuẩn mực (sử dụng dependency injection, DTOs, Decorators, Prisma, Redis, BullMQ hoặc Vercel AI SDK phù hợp).
+3. Luôn chỉ rõ trade-offs (ưu nhược điểm), corner cases và điểm nghẽn hiệu năng khi scale.
+4. Trả lời bằng tiếng Việt chuyên nghiệp, súc tích, thực chiến.
+
+Cuối câu trả lời, hãy kèm 2-3 câu hỏi gợi ý đào sâu tiếp theo ở định dạng:
+FOLLOW_UPS:
+- Câu hỏi 1...
+- Câu hỏi 2...
+- Câu hỏi 3...
+"""
+
+    messages = [{"role": "system", "content": system_instruction}]
+
+    if history:
+        for msg in history[-6:]:  # Keep recent turns for context
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            if role in ("user", "assistant") and content:
+                messages.append({"role": role, "content": content})
+
+    messages.append({"role": "user", "content": user_message})
+
+    try:
+        response = await client.chat.completions.create(
+            model=settings.AI_MODEL,
+            messages=messages,
+            temperature=0.4,
+        )
+        raw_text = response.choices[0].message.content.strip()
+
+        suggested_followups = []
+        reply_body = raw_text
+        if "FOLLOW_UPS:" in raw_text:
+            parts = raw_text.split("FOLLOW_UPS:")
+            reply_body = parts[0].strip()
+            follow_lines = parts[1].strip().split("\n")
+            for line in follow_lines:
+                clean_line = line.strip().lstrip("-*•0123456789. ")
+                if clean_line:
+                    suggested_followups.append(clean_line)
+
+        return {
+            "reply": reply_body,
+            "suggested_followups": suggested_followups[:3],
+        }
+    except Exception as e:
+        return {
+            "reply": f"Hiện tại không thể kết nối tới mô hình AI để trả lời (Chi tiết: {str(e)[:150]}). Vui lòng thử lại sau.",
+            "suggested_followups": [
+                "Làm sao áp dụng bài viết này vào NestJS?",
+                "Những rủi ro về hiệu năng khi áp dụng là gì?",
+            ],
+        }
+
