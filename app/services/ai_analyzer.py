@@ -28,6 +28,7 @@ Bạn cần:
 11. Xây dựng `learning_path`:
    - `prerequisites`: Các kiến thức nền tảng cần biết trước khi đọc bài này.
    - `recommended_next_topics`: Các chủ đề chuyên sâu nên đào sâu tiếp theo.
+12. Gán `cluster_topic_key`: Một slug ngắn gọn dạng kebab-case nhận diện sự kiện cốt lõi của bài viết để gom chùm tin (ví dụ: "apple-iphone-18-launch", "deepseek-v3-release", "anthropic-claude-3-7", "postgresql-17-performance").
 
 Trả về kết quả DUY NHẤT dưới dạng JSON hợp lệ (không kèm markdown thừa hoặc đặt trong ```json):
 {
@@ -36,6 +37,7 @@ Trả về kết quả DUY NHẤT dưới dạng JSON hợp lệ (không kèm ma
   "target_audience": ["Backend NestJS Engineer", "AI Engineer"],
   "vietnamese_title": "...",
   "vietnamese_summary": "...",
+  "cluster_topic_key": "slug-kebab-case",
   "key_takeaways": ["...", "..."],
   "new_tech_stack": [{"name": "...", "category": "...", "desc": "..."}],
   "tags": ["..."],

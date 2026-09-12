@@ -74,7 +74,42 @@ async def crawl_single_source(
                 ]
                 article.tags = analysis.tags
                 article.target_audience = analysis.target_audience
+                article.architectural_tradeoffs = (
+                    analysis.architectural_tradeoffs.model_dump()
+                    if analysis.architectural_tradeoffs
+                    else {}
+                )
+                article.nestjs_blueprint = (
+                    analysis.nestjs_blueprint.model_dump()
+                    if analysis.nestjs_blueprint
+                    else {}
+                )
+                article.learning_path = (
+                    analysis.learning_path.model_dump()
+                    if analysis.learning_path
+                    else {}
+                )
+                article.cluster_topic_key = analysis.cluster_topic_key
                 article.ai_model_used = settings.AI_MODEL
+
+            # Story Clustering & Deduplication within 48h window
+            from app.services.clustering_service import assign_article_cluster
+            since_time = datetime.datetime.utcnow() - datetime.timedelta(hours=48)
+            recent_res = await db.execute(
+                select(Article).where(Article.created_at >= since_time)
+            )
+            recent_candidates = recent_res.scalars().all()
+
+            cluster_id, is_canonical, demoted_id = assign_article_cluster(
+                article, recent_candidates
+            )
+            article.cluster_id = cluster_id
+            article.is_canonical = is_canonical
+
+            if demoted_id:
+                demoted_article = await db.get(Article, demoted_id)
+                if demoted_article:
+                    demoted_article.is_canonical = False
 
             db.add(article)
             await db.commit()  # Commit each article safely

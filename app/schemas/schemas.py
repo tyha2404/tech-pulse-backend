@@ -119,6 +119,7 @@ class AIAnalysisResult(BaseModel):
     architectural_tradeoffs: Optional[ArchitecturalTradeoffs] = None
     nestjs_blueprint: Optional[NestJSBlueprint] = None
     learning_path: Optional[LearningPath] = None
+    cluster_topic_key: Optional[str] = None
 
 
 class ArticleChatRequest(BaseModel):

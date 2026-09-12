@@ -49,9 +49,17 @@ def compute_title_similarity(title1: str, title2: str) -> float:
     tokens1 = extract_tokens(norm1)
     tokens2 = extract_tokens(norm2)
 
-    # Word-level token overlap (Jaccard)
+    if not tokens1 or not tokens2:
+        return 0.0
+
+    # Overlap Coefficient: len(intersection) / min(len(tokens1), len(tokens2))
+    # This detects when one headline is a focused variation of another headline
+    intersection = tokens1 & tokens2
+    overlap_coef = len(intersection) / min(len(tokens1), len(tokens2))
+
+    # Jaccard Token similarity
     union_tokens = tokens1 | tokens2
-    token_sim = (len(tokens1 & tokens2) / len(union_tokens)) if union_tokens else 0.0
+    token_jaccard = len(intersection) / len(union_tokens)
 
     # 2-gram shingle overlap
     shingles1 = extract_shingles(norm1, n=2)
@@ -59,5 +67,59 @@ def compute_title_similarity(title1: str, title2: str) -> float:
     union_shingles = shingles1 | shingles2
     shingle_sim = (len(shingles1 & shingles2) / len(union_shingles)) if union_shingles else 0.0
 
-    # Weighted blend: 60% token overlap + 40% sequence shingle overlap
-    return 0.6 * token_sim + 0.4 * shingle_sim
+    # Score: 50% Overlap coef + 30% Token Jaccard + 20% Shingle sim
+    return 0.5 * overlap_coef + 0.3 * token_jaccard + 0.2 * shingle_sim
+
+
+def assign_article_cluster(
+    new_article,
+    recent_candidates,
+    similarity_threshold: float = 0.45,
+):
+    """
+    Determines if new_article belongs to an existing story cluster from recent_candidates.
+    Returns:
+        (cluster_id: str, is_canonical: bool, demoted_article_id: Optional[int])
+    """
+    import uuid
+
+    best_match = None
+    best_similarity = 0.0
+
+    new_title = new_article.vietnamese_title or new_article.title
+    new_topic_key = getattr(new_article, "cluster_topic_key", None)
+    new_score = getattr(new_article, "relevance_score", 0.0) or 0.0
+
+    for candidate in recent_candidates:
+        candidate_cluster_id = getattr(candidate, "cluster_id", None)
+        if not candidate_cluster_id:
+            continue
+
+        cand_topic_key = getattr(candidate, "cluster_topic_key", None)
+        # 1. Exact match on non-empty cluster_topic_key
+        if new_topic_key and cand_topic_key and new_topic_key == cand_topic_key:
+            best_match = candidate
+            best_similarity = 1.0
+            break
+
+        # 2. Similarity on title
+        cand_title = getattr(candidate, "vietnamese_title", None) or getattr(candidate, "title", "")
+        sim = compute_title_similarity(new_title, cand_title)
+        if sim >= similarity_threshold and sim > best_similarity:
+            best_similarity = sim
+            best_match = candidate
+
+    if best_match:
+        cluster_id = best_match.cluster_id
+        # Find current canonical in this cluster if best_match is not canonical or to compare scores
+        cand_score = getattr(best_match, "relevance_score", 0.0) or 0.0
+        
+        # If new article is significantly higher quality (> 0.5 or strictly higher if equal), promote it
+        if new_score > cand_score:
+            return cluster_id, True, best_match.id if getattr(best_match, "is_canonical", False) else None
+        else:
+            return cluster_id, False, None
+
+    # No match found -> start brand new cluster with unique cluster_id and is_canonical=True
+    return str(uuid.uuid4()), True, None
+
