@@ -112,7 +112,6 @@ DEFAULT_SOURCES = [
         "source_type": "rss",
         "category": "AI & Future Tech",
     },
-
     # 2. Backend & Kiến trúc hệ thống (Backend & Architecture)
     {
         "name": "The Pragmatic Engineer (Gergely Orosz)",
@@ -225,7 +224,6 @@ DEFAULT_SOURCES = [
         "source_type": "rss",
         "category": "Backend & Architecture",
     },
-
     # 3. Báo Công nghệ Quốc tế (Global Tech)
     {
         "name": "Ars Technica",
@@ -248,7 +246,6 @@ DEFAULT_SOURCES = [
         "source_type": "rss",
         "category": "Global Tech",
     },
-
     # 4. Tin Công nghệ Việt Nam (Vietnam Tech)
     {
         "name": "VnExpress Số Hóa",
@@ -357,11 +354,31 @@ async def lifespan(app: FastAPI):
 
         # Auto-migrate timestamp columns to TIMESTAMP WITH TIME ZONE (TIMESTAMPTZ)
         try:
-            await conn.execute(text("ALTER TABLE articles ALTER COLUMN published_at TYPE TIMESTAMP WITH TIME ZONE USING published_at AT TIME ZONE 'UTC'"))
-            await conn.execute(text("ALTER TABLE articles ALTER COLUMN created_at TYPE TIMESTAMP WITH TIME ZONE USING created_at AT TIME ZONE 'UTC'"))
-            await conn.execute(text("ALTER TABLE sources ALTER COLUMN last_crawled_at TYPE TIMESTAMP WITH TIME ZONE USING last_crawled_at AT TIME ZONE 'UTC'"))
-            await conn.execute(text("ALTER TABLE sources ALTER COLUMN created_at TYPE TIMESTAMP WITH TIME ZONE USING created_at AT TIME ZONE 'UTC'"))
-            await conn.execute(text("ALTER TABLE sources ALTER COLUMN updated_at TYPE TIMESTAMP WITH TIME ZONE USING updated_at AT TIME ZONE 'UTC'"))
+            await conn.execute(
+                text(
+                    "ALTER TABLE articles ALTER COLUMN published_at TYPE TIMESTAMP WITH TIME ZONE USING published_at AT TIME ZONE 'UTC'"
+                )
+            )
+            await conn.execute(
+                text(
+                    "ALTER TABLE articles ALTER COLUMN created_at TYPE TIMESTAMP WITH TIME ZONE USING created_at AT TIME ZONE 'UTC'"
+                )
+            )
+            await conn.execute(
+                text(
+                    "ALTER TABLE sources ALTER COLUMN last_crawled_at TYPE TIMESTAMP WITH TIME ZONE USING last_crawled_at AT TIME ZONE 'UTC'"
+                )
+            )
+            await conn.execute(
+                text(
+                    "ALTER TABLE sources ALTER COLUMN created_at TYPE TIMESTAMP WITH TIME ZONE USING created_at AT TIME ZONE 'UTC'"
+                )
+            )
+            await conn.execute(
+                text(
+                    "ALTER TABLE sources ALTER COLUMN updated_at TYPE TIMESTAMP WITH TIME ZONE USING updated_at AT TIME ZONE 'UTC'"
+                )
+            )
         except Exception as e:
             print(f"Timestamp migration notice: {e}")
 
@@ -385,11 +402,31 @@ async def lifespan(app: FastAPI):
 
         # Auto-migrate Story Clustering & Deduplication columns
         try:
-            await conn.execute(text("ALTER TABLE articles ADD COLUMN IF NOT EXISTS cluster_id VARCHAR(100)"))
-            await conn.execute(text("ALTER TABLE articles ADD COLUMN IF NOT EXISTS is_canonical BOOLEAN DEFAULT TRUE"))
-            await conn.execute(text("ALTER TABLE articles ADD COLUMN IF NOT EXISTS cluster_topic_key VARCHAR(255)"))
-            await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_articles_cluster_id ON articles(cluster_id)"))
-            await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_articles_is_canonical ON articles(is_canonical)"))
+            await conn.execute(
+                text(
+                    "ALTER TABLE articles ADD COLUMN IF NOT EXISTS cluster_id VARCHAR(100)"
+                )
+            )
+            await conn.execute(
+                text(
+                    "ALTER TABLE articles ADD COLUMN IF NOT EXISTS is_canonical BOOLEAN DEFAULT TRUE"
+                )
+            )
+            await conn.execute(
+                text(
+                    "ALTER TABLE articles ADD COLUMN IF NOT EXISTS cluster_topic_key VARCHAR(255)"
+                )
+            )
+            await conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS idx_articles_cluster_id ON articles(cluster_id)"
+                )
+            )
+            await conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS idx_articles_is_canonical ON articles(is_canonical)"
+                )
+            )
         except Exception as e:
             print(f"Clustering migration notice: {e}")
 
@@ -415,7 +452,9 @@ async def lifespan(app: FastAPI):
 
         if new_sources_added > 0:
             await db.commit()
-            print(f"🌱 Đã tự động đồng bộ thêm {new_sources_added} nguồn tin công nghệ mới vào cơ sở dữ liệu!")
+            print(
+                f"🌱 Đã tự động đồng bộ thêm {new_sources_added} nguồn tin công nghệ mới vào cơ sở dữ liệu!"
+            )
 
     # Start scheduler
     scheduler.add_job(
@@ -431,8 +470,12 @@ async def lifespan(app: FastAPI):
     async def evening_briefing_cron():
         await dispatch_daily_espresso_digest("🌇 Evening Tech Briefing (18:00 PM)")
 
-    scheduler.add_job(morning_espresso_cron, "cron", hour=8, minute=0, id="morning_espresso")
-    scheduler.add_job(evening_briefing_cron, "cron", hour=18, minute=0, id="evening_briefing")
+    scheduler.add_job(
+        morning_espresso_cron, "cron", hour=8, minute=0, id="morning_espresso"
+    )
+    scheduler.add_job(
+        evening_briefing_cron, "cron", hour=18, minute=0, id="evening_briefing"
+    )
 
     scheduler.start()
     print(

@@ -58,12 +58,21 @@ async def test_summarize_article_on_demand():
         target_audience=["Backend Engineer"],
         vietnamese_title="PostgreSQL 18 Cải tiến Async I/O",
         vietnamese_summary="Bài viết phân tích các nâng cấp Async I/O trong PostgreSQL 18.",
-        key_takeaways=["Async I/O giúp tăng throughput lên 30%", "Giảm contention buffer pool"],
-        new_tech_stack=[TechStackItem(name="PostgreSQL 18", category="Database", desc="Async I/O engine")],
+        key_takeaways=[
+            "Async I/O giúp tăng throughput lên 30%",
+            "Giảm contention buffer pool",
+        ],
+        new_tech_stack=[
+            TechStackItem(
+                name="PostgreSQL 18", category="Database", desc="Async I/O engine"
+            )
+        ],
         tags=["PostgreSQL", "Database"],
     )
 
-    with patch("app.api.endpoints.analyze_article_with_9router", return_value=mock_analysis):
+    with patch(
+        "app.api.endpoints.analyze_article_with_9router", return_value=mock_analysis
+    ):
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
             r = await ac.post(f"/api/articles/{art.id}/summarize")

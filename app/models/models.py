@@ -38,9 +38,7 @@ class Source(Base):
     articles_count = Column(Integer, default=0)
 
     created_at = Column(DateTime(timezone=True), default=utc_now)
-    updated_at = Column(
-        DateTime(timezone=True), default=utc_now, onupdate=utc_now
-    )
+    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
     articles = relationship(
         "Article", back_populates="source", cascade="all, delete-orphan"
@@ -76,9 +74,15 @@ class Article(Base):
     )  # List of objects: [{name, category, desc}]
     tags = Column(JSON, default=list)  # ["Backend", "AI", "PostgreSQL", ...]
     target_audience = Column(JSON, default=list)
-    architectural_tradeoffs = Column(JSON, default=dict)  # {pros, cons, when_not_to_use, scalability_bottlenecks}
-    nestjs_blueprint = Column(JSON, default=dict)  # {architectural_pattern, suggested_module_structure, code_snippet, database_integration}
-    learning_path = Column(JSON, default=dict)  # {prerequisites, recommended_next_topics}
+    architectural_tradeoffs = Column(
+        JSON, default=dict
+    )  # {pros, cons, when_not_to_use, scalability_bottlenecks}
+    nestjs_blueprint = Column(
+        JSON, default=dict
+    )  # {architectural_pattern, suggested_module_structure, code_snippet, database_integration}
+    learning_path = Column(
+        JSON, default=dict
+    )  # {prerequisites, recommended_next_topics}
     ai_model_used = Column(String(100), nullable=True)
 
     # Story Clustering & Deduplication

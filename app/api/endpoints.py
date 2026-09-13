@@ -450,7 +450,9 @@ async def chat_with_article_endpoint(
 
     content_for_chat = (
         article.raw_content
-        or (f"{article.vietnamese_summary or ''}\n\nTakeaways: {', '.join(article.key_takeaways or [])}")
+        or (
+            f"{article.vietnamese_summary or ''}\n\nTakeaways: {', '.join(article.key_takeaways or [])}"
+        )
         or article.title
     )
 
@@ -483,11 +485,13 @@ async def get_related_articles(
         raise HTTPException(status_code=404, detail="Không tìm thấy bài viết")
 
     current_tags = set([t.lower() for t in (article.tags or [])])
-    current_stacks = set([
-        s.get("name", "").lower()
-        for s in (article.new_tech_stacks or [])
-        if isinstance(s, dict)
-    ])
+    current_stacks = set(
+        [
+            s.get("name", "").lower()
+            for s in (article.new_tech_stacks or [])
+            if isinstance(s, dict)
+        ]
+    )
     combined_topics = current_tags.union(current_stacks)
 
     # Fetch candidate articles (not this article)
@@ -506,11 +510,13 @@ async def get_related_articles(
     scored = []
     for cand in candidates:
         cand_tags = set([t.lower() for t in (cand.tags or [])])
-        cand_stacks = set([
-            s.get("name", "").lower()
-            for s in (cand.new_tech_stacks or [])
-            if isinstance(s, dict)
-        ])
+        cand_stacks = set(
+            [
+                s.get("name", "").lower()
+                for s in (cand.new_tech_stacks or [])
+                if isinstance(s, dict)
+            ]
+        )
         cand_topics = cand_tags.union(cand_stacks)
 
         overlap = len(combined_topics.intersection(cand_topics))
@@ -544,11 +550,16 @@ async def get_weekly_radar_digest_endpoint(
     db: AsyncSession = Depends(get_db),
 ):
     import time
+
     global _radar_cache
     now = time.time()
 
     # Return cached result if still valid and not force refreshing
-    if not force_refresh and _radar_cache["data"] is not None and now < _radar_cache["expires_at"]:
+    if (
+        not force_refresh
+        and _radar_cache["data"] is not None
+        and now < _radar_cache["expires_at"]
+    ):
         return _radar_cache["data"]
 
     # Select top articles from the database
@@ -556,7 +567,9 @@ async def get_weekly_radar_digest_endpoint(
         select(Article)
         .options(selectinload(Article.source))
         .where(Article.is_hidden == False)
-        .order_by(Article.relevance_score.desc(), Article.published_at.desc().nulls_last())
+        .order_by(
+            Article.relevance_score.desc(), Article.published_at.desc().nulls_last()
+        )
         .limit(15)
     )
     articles = result.scalars().all()
@@ -564,13 +577,15 @@ async def get_weekly_radar_digest_endpoint(
     articles_payload = []
     top_items = []
     for a in articles:
-        articles_payload.append({
-            "title": a.title,
-            "vietnamese_title": a.vietnamese_title,
-            "vietnamese_summary": a.vietnamese_summary,
-            "tags": a.tags or [],
-            "source_name": a.source.name if a.source else None,
-        })
+        articles_payload.append(
+            {
+                "title": a.title,
+                "vietnamese_title": a.vietnamese_title,
+                "vietnamese_summary": a.vietnamese_summary,
+                "tags": a.tags or [],
+                "source_name": a.source.name if a.source else None,
+            }
+        )
         top_items.append(
             RelatedArticleItem(
                 id=a.id,

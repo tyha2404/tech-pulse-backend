@@ -149,7 +149,6 @@ class WeeklyRadarDigestResponse(BaseModel):
     top_articles: List[RelatedArticleItem] = []
 
 
-
 class CrawlTestResult(BaseModel):
     success: bool
     detected_type: str
@@ -170,4 +169,3 @@ class ReaderModeResponse(BaseModel):
     reading_time_minutes: int
     content: str
     is_bookmarked: bool = False
-

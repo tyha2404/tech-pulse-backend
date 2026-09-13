@@ -4,10 +4,42 @@ from typing import Set
 
 # Common Vietnamese & English tech stopwords that don't differentiate news topics
 STOPWORDS = {
-    "va", "tai", "o", "cho", "trong", "tren", "voi", "cua", "la", "nhung", "cac",
-    "nhung", "den", "tu", "ra", "vao", "se", "da", "dang", "mot", "nhieu", "moi",
-    "and", "at", "in", "for", "with", "of", "is", "the", "a", "an", "on", "to"
+    "va",
+    "tai",
+    "o",
+    "cho",
+    "trong",
+    "tren",
+    "voi",
+    "cua",
+    "la",
+    "nhung",
+    "cac",
+    "nhung",
+    "den",
+    "tu",
+    "ra",
+    "vao",
+    "se",
+    "da",
+    "dang",
+    "mot",
+    "nhieu",
+    "moi",
+    "and",
+    "at",
+    "in",
+    "for",
+    "with",
+    "of",
+    "is",
+    "the",
+    "a",
+    "an",
+    "on",
+    "to",
 }
+
 
 def normalize_vietnamese_text(text: str) -> str:
     if not text:
@@ -24,11 +56,13 @@ def normalize_vietnamese_text(text: str) -> str:
     text = re.sub(r"\s+", " ", text).strip()
     return text
 
+
 def extract_tokens(text: str, remove_stopwords: bool = True) -> Set[str]:
     words = text.split()
     if remove_stopwords:
         words = [w for w in words if w not in STOPWORDS and len(w) > 1]
     return set(words)
+
 
 def extract_shingles(text: str, n: int = 2) -> Set[str]:
     words = [w for w in text.split() if w not in STOPWORDS]
@@ -37,6 +71,7 @@ def extract_shingles(text: str, n: int = 2) -> Set[str]:
     if len(words) < n:
         return {text}
     return {" ".join(words[i : i + n]) for i in range(len(words) - n + 1)}
+
 
 def compute_title_similarity(title1: str, title2: str) -> float:
     norm1 = normalize_vietnamese_text(title1)
@@ -65,7 +100,9 @@ def compute_title_similarity(title1: str, title2: str) -> float:
     shingles1 = extract_shingles(norm1, n=2)
     shingles2 = extract_shingles(norm2, n=2)
     union_shingles = shingles1 | shingles2
-    shingle_sim = (len(shingles1 & shingles2) / len(union_shingles)) if union_shingles else 0.0
+    shingle_sim = (
+        (len(shingles1 & shingles2) / len(union_shingles)) if union_shingles else 0.0
+    )
 
     # Score: 50% Overlap coef + 30% Token Jaccard + 20% Shingle sim
     return 0.5 * overlap_coef + 0.3 * token_jaccard + 0.2 * shingle_sim
@@ -103,7 +140,9 @@ def assign_article_cluster(
             break
 
         # 2. Similarity on title
-        cand_title = getattr(candidate, "vietnamese_title", None) or getattr(candidate, "title", "")
+        cand_title = getattr(candidate, "vietnamese_title", None) or getattr(
+            candidate, "title", ""
+        )
         sim = compute_title_similarity(new_title, cand_title)
         if sim >= similarity_threshold and sim > best_similarity:
             best_similarity = sim
@@ -113,13 +152,16 @@ def assign_article_cluster(
         cluster_id = best_match.cluster_id
         # Find current canonical in this cluster if best_match is not canonical or to compare scores
         cand_score = getattr(best_match, "relevance_score", 0.0) or 0.0
-        
+
         # If new article is significantly higher quality (> 0.5 or strictly higher if equal), promote it
         if new_score > cand_score:
-            return cluster_id, True, best_match.id if getattr(best_match, "is_canonical", False) else None
+            return (
+                cluster_id,
+                True,
+                best_match.id if getattr(best_match, "is_canonical", False) else None,
+            )
         else:
             return cluster_id, False, None
 
     # No match found -> start brand new cluster with unique cluster_id and is_canonical=True
     return str(uuid.uuid4()), True, None
-

@@ -301,5 +301,3 @@ Please generate the weekly tech radar digest JSON following the system instructi
                 "Xây dựng API gateway phân luồng traffic giữa API truyền thống và Agentic LLM flows",
             ],
         }
-
-

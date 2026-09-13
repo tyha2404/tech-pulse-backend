@@ -9,17 +9,23 @@ logger = logging.getLogger(__name__)
 # Telegram API does not allow 'localhost' as inline button domain; use 127.0.0.1 or production domain
 FRONTEND_URL = getattr(settings, "FRONTEND_URL", "http://127.0.0.1:5174")
 
+
 def escape_html(text: Optional[str]) -> str:
     if not text:
         return ""
     return html.escape(str(text))
 
+
 def format_elite_article_message(article: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
-    title = escape_html(article.get("vietnamese_title") or article.get("title") or "Bản tin công nghệ")
+    title = escape_html(
+        article.get("vietnamese_title") or article.get("title") or "Bản tin công nghệ"
+    )
     score = article.get("relevance_score", 0.0) or 0.0
     source_name = escape_html(article.get("source_name") or "TechPulse")
     reading_time = article.get("reading_time_minutes", 3)
-    summary = escape_html(article.get("vietnamese_summary") or article.get("title") or "")
+    summary = escape_html(
+        article.get("vietnamese_summary") or article.get("title") or ""
+    )
     url = article.get("url") or FRONTEND_URL
     article_id = article.get("id")
 
@@ -40,13 +46,17 @@ def format_elite_article_message(article: Dict[str, Any]) -> Tuple[str, Dict[str
 
     tags = article.get("tags") or []
     if tags:
-        tag_str = " ".join([f"#{t.replace(' ', '_').replace('-', '_')}" for t in tags[:5]])
+        tag_str = " ".join(
+            [f"#{t.replace(' ', '_').replace('-', '_')}" for t in tags[:5]]
+        )
         lines.append("")
         lines.append(f"🏷 {escape_html(tag_str)}")
 
     msg = "\n".join(lines)
 
-    webapp_url = f"{FRONTEND_URL}/?article_id={article_id}" if article_id else FRONTEND_URL
+    webapp_url = (
+        f"{FRONTEND_URL}/?article_id={article_id}" if article_id else FRONTEND_URL
+    )
     reply_markup = {
         "inline_keyboard": [
             [
@@ -57,7 +67,10 @@ def format_elite_article_message(article: Dict[str, Any]) -> Tuple[str, Dict[str
     }
     return msg, reply_markup
 
-def format_cluster_alert_message(cluster_data: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+
+def format_cluster_alert_message(
+    cluster_data: Dict[str, Any],
+) -> Tuple[str, Dict[str, Any]]:
     title = escape_html(cluster_data.get("title") or "Sự kiện công nghệ mới")
     sources = cluster_data.get("sources") or []
     summary = escape_html(cluster_data.get("summary") or "")
@@ -77,15 +90,14 @@ def format_cluster_alert_message(cluster_data: Dict[str, Any]) -> Tuple[str, Dic
     msg = "\n".join(lines)
 
     reply_markup = {
-        "inline_keyboard": [
-            [
-                {"text": "🌐 Đọc chi tiết trên TechPulse ↗", "url": url}
-            ]
-        ]
+        "inline_keyboard": [[{"text": "🌐 Đọc chi tiết trên TechPulse ↗", "url": url}]]
     }
     return msg, reply_markup
 
-def format_espresso_digest_message(articles: List[Dict[str, Any]], title_label: str) -> Tuple[str, Dict[str, Any]]:
+
+def format_espresso_digest_message(
+    articles: List[Dict[str, Any]], title_label: str
+) -> Tuple[str, Dict[str, Any]]:
     lines = [
         f"<b>{escape_html(title_label)}</b>",
         "<i>Top bài phân tích chuyên sâu tuyển chọn dành cho bạn:</i>",
@@ -96,18 +108,38 @@ def format_espresso_digest_message(articles: List[Dict[str, Any]], title_label: 
         score = art.get("relevance_score", 0.0) or 0.0
         art_url = art.get("url") or FRONTEND_URL
         lines.append(f"<b>{idx}. {art_title}</b> (⭐ {score:.1f})")
-        lines.append(f"👉 <a href=\"{art_url}\">Xem bài viết</a>")
+        lines.append(f'👉 <a href="{art_url}">Xem bài viết</a>')
         lines.append("")
 
     lines.append(f"📱 <i>Khám phá toàn bộ bảng tin tại: {FRONTEND_URL}</i>")
     msg = "\n".join(lines)
 
     reply_markup = {
-        "inline_keyboard": [
-            [{"text": "⚡ Mở TechPulse Webapp ↗", "url": FRONTEND_URL}]
-        ]
+        "inline_keyboard": [[{"text": "⚡ Mở TechPulse Webapp ↗", "url": FRONTEND_URL}]]
     }
     return msg, reply_markup
+
+
+def _sanitize_reply_markup_urls(
+    reply_markup: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    if not reply_markup:
+        return reply_markup
+    import copy
+
+    markup = copy.deepcopy(reply_markup)
+    inline_keyboard = markup.get("inline_keyboard", [])
+    for row in inline_keyboard:
+        for btn in row:
+            if "url" in btn and isinstance(btn["url"], str):
+                # Telegram strictly rejects 'localhost' in button URLs
+                btn["url"] = (
+                    btn["url"]
+                    .replace("http://localhost", "http://127.0.0.1")
+                    .replace("https://localhost", "https://127.0.0.1")
+                )
+    return markup
+
 
 async def send_telegram_message(
     html_text: str,
@@ -127,7 +159,7 @@ async def send_telegram_message(
         "disable_web_page_preview": False,
     }
     if reply_markup:
-        payload["reply_markup"] = reply_markup
+        payload["reply_markup"] = _sanitize_reply_markup_urls(reply_markup)
 
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
@@ -140,7 +172,9 @@ async def send_telegram_message(
     return False
 
 
-async def dispatch_daily_espresso_digest(title_label: str = "☕ Morning Tech Espresso (8:00 AM)") -> bool:
+async def dispatch_daily_espresso_digest(
+    title_label: str = "☕ Morning Tech Espresso (8:00 AM)",
+) -> bool:
     """
     Queries top articles from the last 24 hours, formats a digest and sends it to Telegram.
     """
@@ -191,4 +225,3 @@ async def dispatch_daily_espresso_digest(title_label: str = "☕ Morning Tech Es
 
         msg, markup = format_espresso_digest_message(data_list, title_label)
         return await send_telegram_message(msg, reply_markup=markup)
-

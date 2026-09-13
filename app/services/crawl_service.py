@@ -97,6 +97,7 @@ async def crawl_single_source(
 
             # Story Clustering & Deduplication within 48h window
             from app.services.clustering_service import assign_article_cluster
+
             since_time = datetime.now(timezone.utc) - timedelta(hours=48)
             recent_res = await db.execute(
                 select(Article).where(Article.created_at >= since_time)
@@ -124,11 +125,17 @@ async def crawl_single_source(
                 if article.cluster_id:
                     # Find all distinct source names in this cluster
                     c_res = await db.execute(
-                        select(Article).options(selectinload(Article.source)).where(Article.cluster_id == article.cluster_id)
+                        select(Article)
+                        .options(selectinload(Article.source))
+                        .where(Article.cluster_id == article.cluster_id)
                     )
                     c_articles = c_res.scalars().all()
-                    cluster_sources = [a.source.name for a in c_articles if a.source and a.source.name]
-                await trigger_smart_article_notifications(article, cluster_sources=cluster_sources)
+                    cluster_sources = [
+                        a.source.name for a in c_articles if a.source and a.source.name
+                    ]
+                await trigger_smart_article_notifications(
+                    article, cluster_sources=cluster_sources
+                )
             except Exception as noti_err:
                 print(f"Notification error: {noti_err}")
 
@@ -152,7 +159,9 @@ async def crawl_single_source(
     return articles_added
 
 
-async def trigger_smart_article_notifications(article: Article, cluster_sources: List[str] = []):
+async def trigger_smart_article_notifications(
+    article: Article, cluster_sources: List[str] = []
+):
     """
     Quy tắc gửi thông báo Telegram:
     Chỉ cần bài viết đạt relevance_score >= 7.5 là gửi thông báo ngay lập tức.
@@ -171,7 +180,8 @@ async def trigger_smart_article_notifications(article: Article, cluster_sources:
             cluster_data = {
                 "title": article.vietnamese_title or article.title,
                 "sources": unique_sources,
-                "summary": article.vietnamese_summary or "Đang được nhiều nguồn uy tín đưa tin.",
+                "summary": article.vietnamese_summary
+                or "Đang được nhiều nguồn uy tín đưa tin.",
                 "url": article.url,
             }
             msg, markup = format_cluster_alert_message(cluster_data)
@@ -179,8 +189,14 @@ async def trigger_smart_article_notifications(article: Article, cluster_sources:
             return
 
         # Mặc định: Gửi thông báo chi tiết bài viết tinh tuyển
-        content_for_estimate = article.raw_content or article.vietnamese_summary or article.title
-        reading_time = max(1, round(len(content_for_estimate.split()) / 200)) if content_for_estimate else 3
+        content_for_estimate = (
+            article.raw_content or article.vietnamese_summary or article.title
+        )
+        reading_time = (
+            max(1, round(len(content_for_estimate.split()) / 200))
+            if content_for_estimate
+            else 3
+        )
 
         data = {
             "id": article.id,

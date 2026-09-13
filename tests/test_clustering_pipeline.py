@@ -2,6 +2,7 @@ import pytest
 from app.services.clustering_service import assign_article_cluster
 from app.models.models import Article
 
+
 def test_assign_article_cluster_to_existing_matching_title():
     existing_article = Article(
         id=1,
@@ -17,11 +18,14 @@ def test_assign_article_cluster_to_existing_matching_title():
         vietnamese_title="Viettel Store chính thức mở bán iPhone 18",
         relevance_score=8.5,
     )
-    cluster_id, is_canonical, demoted_id = assign_article_cluster(new_article, [existing_article])
+    cluster_id, is_canonical, demoted_id = assign_article_cluster(
+        new_article, [existing_article]
+    )
     assert cluster_id == "cluster-abc"
     # New article has higher relevance_score (8.5 > 7.0), so it becomes canonical
     assert is_canonical is True
     assert demoted_id == 1
+
 
 def test_assign_article_cluster_matching_topic_key():
     existing_article = Article(
@@ -38,11 +42,14 @@ def test_assign_article_cluster_matching_topic_key():
         cluster_topic_key="deepseek-v3-release",
         relevance_score=7.5,
     )
-    cluster_id, is_canonical, demoted_id = assign_article_cluster(new_article, [existing_article])
+    cluster_id, is_canonical, demoted_id = assign_article_cluster(
+        new_article, [existing_article]
+    )
     assert cluster_id == "cluster-deepseek"
     # Lower score -> not canonical
     assert is_canonical is False
     assert demoted_id is None
+
 
 def test_assign_article_cluster_new_cluster():
     existing_article = Article(
@@ -57,7 +64,9 @@ def test_assign_article_cluster_new_cluster():
         title="Ra mắt máy bay không người lái mới",
         relevance_score=6.0,
     )
-    cluster_id, is_canonical, demoted_id = assign_article_cluster(new_article, [existing_article])
+    cluster_id, is_canonical, demoted_id = assign_article_cluster(
+        new_article, [existing_article]
+    )
     assert cluster_id != "cluster-nestjs"
     assert is_canonical is True
     assert demoted_id is None

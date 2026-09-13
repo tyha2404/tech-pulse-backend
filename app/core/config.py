@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
     TELEGRAM_CHAT_ID: str = os.getenv("TELEGRAM_CHAT_ID", "")
     DISCORD_WEBHOOK_URL: str = os.getenv("DISCORD_WEBHOOK_URL", "")
+    FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://127.0.0.1:5174")
 
     @property
     def DATABASE_URL(self) -> str:

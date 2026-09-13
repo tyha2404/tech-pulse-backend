@@ -6,11 +6,13 @@ from app.services.telegram_service import (
     escape_html,
 )
 
+
 def test_escape_html():
     raw = "Code <test> & 'quotes' \"here\""
     escaped = escape_html(raw)
     assert "&lt;test&gt;" in escaped
     assert "&amp;" in escaped
+
 
 def test_format_elite_article_message():
     article_data = {
@@ -34,6 +36,7 @@ def test_format_elite_article_message():
     buttons = reply_markup["inline_keyboard"][0]
     assert any("bytebytego.com" in b["url"] for b in buttons)
 
+
 def test_format_cluster_alert_message():
     cluster_data = {
         "title": "Ra mắt Claude 3.7 Sonnet",
@@ -47,12 +50,25 @@ def test_format_cluster_alert_message():
     assert "Tuổi Trẻ" in msg
     assert "inline_keyboard" in reply_markup
 
+
 def test_format_espresso_digest_message():
     articles = [
-        {"title": "Bài 1", "vietnamese_title": "Tin công nghệ 1", "relevance_score": 9.0, "url": "https://a.com"},
-        {"title": "Bài 2", "vietnamese_title": "Tin công nghệ 2", "relevance_score": 8.5, "url": "https://b.com"},
+        {
+            "title": "Bài 1",
+            "vietnamese_title": "Tin công nghệ 1",
+            "relevance_score": 9.0,
+            "url": "https://a.com",
+        },
+        {
+            "title": "Bài 2",
+            "vietnamese_title": "Tin công nghệ 2",
+            "relevance_score": 8.5,
+            "url": "https://b.com",
+        },
     ]
-    msg, reply_markup = format_espresso_digest_message(articles, "☕ Morning Tech Espresso")
+    msg, reply_markup = format_espresso_digest_message(
+        articles, "☕ Morning Tech Espresso"
+    )
     assert "Morning Tech Espresso" in msg
     assert "Tin công nghệ 1" in msg
     assert "Tin công nghệ 2" in msg
