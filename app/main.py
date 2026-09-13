@@ -58,8 +58,8 @@ DEFAULT_SOURCES = [
     },
     {
         "name": "LangChain Blog (Agentic & RAG)",
-        "url": "https://blog.langchain.dev",
-        "feed_url": "https://blog.langchain.dev/rss/",
+        "url": "https://www.langchain.com/blog",
+        "feed_url": "https://www.langchain.com/blog/rss.xml",
         "source_type": "rss",
         "category": "AI & Future Tech",
     },
