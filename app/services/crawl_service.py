@@ -1,4 +1,4 @@
-import datetime
+from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 import httpx
 from sqlalchemy.future import select
@@ -9,7 +9,7 @@ from app.crawlers.article_crawler import (
     fetch_rss_feed,
     fetch_hacker_news,
     extract_clean_article_content,
-    make_naive,
+    make_tz_aware,
 )
 from app.services.ai_analyzer import analyze_article_with_9router
 from app.core.config import settings
@@ -47,7 +47,8 @@ async def crawl_single_source(
                 if extracted:
                     full_content = extracted
 
-            pub_at = make_naive(item.get("published_at")) or datetime.datetime.utcnow()
+            now_utc = datetime.now(timezone.utc)
+            pub_at = make_tz_aware(item.get("published_at")) or now_utc
 
             article = Article(
                 source_id=source.id,
@@ -57,7 +58,7 @@ async def crawl_single_source(
                 published_at=pub_at,
                 raw_content=full_content,
                 is_processed=False,
-                created_at=datetime.datetime.utcnow(),
+                created_at=now_utc,
             )
 
             # AI analysis with 9routers
@@ -96,7 +97,7 @@ async def crawl_single_source(
 
             # Story Clustering & Deduplication within 48h window
             from app.services.clustering_service import assign_article_cluster
-            since_time = datetime.datetime.utcnow() - datetime.timedelta(hours=48)
+            since_time = datetime.now(timezone.utc) - timedelta(hours=48)
             recent_res = await db.execute(
                 select(Article).where(Article.created_at >= since_time)
             )
@@ -113,6 +114,10 @@ async def crawl_single_source(
                 if demoted_article:
                     demoted_article.is_canonical = False
 
+            db.add(article)
+            await db.commit()  # Commit each article safely to generate article.id
+            articles_added += 1
+
             # Smart Telegram Notification Trigger
             try:
                 cluster_sources = []
@@ -127,13 +132,9 @@ async def crawl_single_source(
             except Exception as noti_err:
                 print(f"Notification error: {noti_err}")
 
-            db.add(article)
-            await db.commit()  # Commit each article safely
-            articles_added += 1
-
         # Update source health status
         source.status = "healthy"
-        source.last_crawled_at = datetime.datetime.utcnow()
+        source.last_crawled_at = datetime.now(timezone.utc)
         source.last_error = None
         source.articles_count = (source.articles_count or 0) + articles_added
         await db.commit()
@@ -153,9 +154,8 @@ async def crawl_single_source(
 
 async def trigger_smart_article_notifications(article: Article, cluster_sources: List[str] = []):
     """
-    Intelligently routes notifications:
-    1. If cluster has >= 3 distinct sources -> Breaking Cluster Alert
-    2. Else if article is canonical and relevance_score >= 7.5 -> Elite Article Alert
+    Quy tắc gửi thông báo Telegram:
+    Chỉ cần bài viết đạt relevance_score >= 7.5 là gửi thông báo ngay lập tức.
     """
     from app.services.telegram_service import (
         format_elite_article_message,
@@ -163,22 +163,22 @@ async def trigger_smart_article_notifications(article: Article, cluster_sources:
         send_telegram_message,
     )
 
-    # 1. Breaking Cluster Alert
-    unique_sources = list(dict.fromkeys(cluster_sources))
-    if article.is_canonical and len(unique_sources) >= 3:
-        cluster_data = {
-            "title": article.vietnamese_title or article.title,
-            "sources": unique_sources,
-            "summary": article.vietnamese_summary or "Đang được nhiều nguồn uy tín đưa tin.",
-            "url": article.url,
-        }
-        msg, markup = format_cluster_alert_message(cluster_data)
-        await send_telegram_message(msg, reply_markup=markup)
-        return
+    # Nếu bài viết đạt từ 7.5 điểm AI trở lên -> Gửi thông báo ngay
+    if (article.relevance_score or 0.0) >= 7.5:
+        # Nếu bài viết thuộc sự kiện nóng được >= 3 nguồn cùng đưa tin
+        unique_sources = list(dict.fromkeys(cluster_sources))
+        if len(unique_sources) >= 3:
+            cluster_data = {
+                "title": article.vietnamese_title or article.title,
+                "sources": unique_sources,
+                "summary": article.vietnamese_summary or "Đang được nhiều nguồn uy tín đưa tin.",
+                "url": article.url,
+            }
+            msg, markup = format_cluster_alert_message(cluster_data)
+            await send_telegram_message(msg, reply_markup=markup)
+            return
 
-    # 2. Elite Article Alert
-    if article.is_canonical and (article.relevance_score or 0.0) >= 7.5:
-        # Estimate reading time
+        # Mặc định: Gửi thông báo chi tiết bài viết tinh tuyển
         content_for_estimate = article.raw_content or article.vietnamese_summary or article.title
         reading_time = max(1, round(len(content_for_estimate.split()) / 200)) if content_for_estimate else 3
 

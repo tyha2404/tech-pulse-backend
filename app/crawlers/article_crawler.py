@@ -10,14 +10,13 @@ headers = {
 }
 
 
-def make_naive(dt: datetime | None) -> datetime | None:
-    """Ensure datetime is offset-naive UTC for PostgreSQL TIMESTAMP WITHOUT TIME ZONE"""
+def make_tz_aware(dt: datetime | None) -> datetime | None:
+    """Ensure datetime is offset-aware UTC for TIMESTAMP WITH TIME ZONE"""
     if dt is None:
         return None
     if dt.tzinfo is not None:
-        # Convert to UTC and strip tzinfo
-        return dt.astimezone(timezone.utc).replace(tzinfo=None)
-    return dt
+        return dt.astimezone(timezone.utc)
+    return dt.replace(tzinfo=timezone.utc)
 
 
 async def fetch_rss_feed(feed_url: str) -> list[dict]:
@@ -51,7 +50,7 @@ async def fetch_rss_feed(feed_url: str) -> list[dict]:
                 "title": getattr(entry, "title", "").strip(),
                 "url": getattr(entry, "link", "").strip(),
                 "author": getattr(entry, "author", None),
-                "published_at": make_naive(pub_date),
+                "published_at": make_tz_aware(pub_date),
                 "raw_content": summary_text[:4000] if summary_text else "",
             }
         )
@@ -87,7 +86,7 @@ async def fetch_hacker_news() -> list[dict]:
                     "title": hit.get("title", ""),
                     "url": url,
                     "author": hit.get("author"),
-                    "published_at": make_naive(raw_dt) or datetime.utcnow(),
+                    "published_at": make_tz_aware(raw_dt) or datetime.now(timezone.utc),
                     "raw_content": hit.get("story_text", "") or hit.get("title", ""),
                 }
             )

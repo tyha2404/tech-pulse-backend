@@ -26,7 +26,7 @@ async def test_trigger_cluster_breaking_notification():
         id=100,
         title="Claude 3.7 Release",
         vietnamese_title="Anthropic ra mắt Claude 3.7",
-        relevance_score=7.0,  # Below elite threshold
+        relevance_score=8.0,  # Meets >= 7.5 threshold
         is_canonical=True,
         url="https://test.com",
     )

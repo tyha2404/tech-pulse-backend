@@ -14,6 +14,10 @@ from sqlalchemy.orm import relationship
 from app.core.database import Base
 
 
+def utc_now():
+    return datetime.datetime.now(datetime.timezone.utc)
+
+
 class Source(Base):
     __tablename__ = "sources"
 
@@ -29,13 +33,13 @@ class Source(Base):
 
     # Health Monitoring
     status = Column(String(50), default="healthy")  # healthy, warning, error, pending
-    last_crawled_at = Column(DateTime, nullable=True)
+    last_crawled_at = Column(DateTime(timezone=True), nullable=True)
     last_error = Column(Text, nullable=True)
     articles_count = Column(Integer, default=0)
 
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
     updated_at = Column(
-        DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
     )
 
     articles = relationship(
@@ -51,7 +55,7 @@ class Article(Base):
     title = Column(String(500), nullable=False)
     url = Column(String(1024), unique=True, nullable=False, index=True)
     author = Column(String(255), nullable=True)
-    published_at = Column(DateTime, nullable=True)
+    published_at = Column(DateTime(timezone=True), nullable=True)
     raw_content = Column(Text, nullable=True)
 
     # AI Analysis Output via 9routers
@@ -82,6 +86,6 @@ class Article(Base):
     is_canonical = Column(Boolean, default=True, index=True)
     cluster_topic_key = Column(String(255), nullable=True, index=True)
 
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
 
     source = relationship("Source", back_populates="articles")

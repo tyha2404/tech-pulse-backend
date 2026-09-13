@@ -21,9 +21,9 @@ class SourceResponse(SourceBase):
     status: str
     last_crawled_at: Optional[datetime] = None
     last_error: Optional[str] = None
-    articles_count: int = 0
-    created_at: datetime
-    updated_at: datetime
+    articles_count: Optional[int] = 0
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True

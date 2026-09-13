@@ -6,7 +6,8 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-FRONTEND_URL = getattr(settings, "FRONTEND_URL", "http://localhost:5174")
+# Telegram API does not allow 'localhost' as inline button domain; use 127.0.0.1 or production domain
+FRONTEND_URL = getattr(settings, "FRONTEND_URL", "http://127.0.0.1:5174")
 
 def escape_html(text: Optional[str]) -> str:
     if not text:
@@ -148,7 +149,7 @@ async def dispatch_daily_espresso_digest(title_label: str = "☕ Morning Tech Es
     from app.core.database import AsyncSessionLocal
     from app.models.models import Article
 
-    since = datetime.datetime.utcnow() - datetime.timedelta(hours=24)
+    since = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=24)
     async with AsyncSessionLocal() as db:
         stmt = (
             select(Article)

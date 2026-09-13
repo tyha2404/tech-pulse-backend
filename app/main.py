@@ -257,6 +257,16 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 print(f"Migration notice for {col}: {e}")
 
+        # Auto-migrate timestamp columns to TIMESTAMP WITH TIME ZONE (TIMESTAMPTZ)
+        try:
+            await conn.execute(text("ALTER TABLE articles ALTER COLUMN published_at TYPE TIMESTAMP WITH TIME ZONE USING published_at AT TIME ZONE 'UTC'"))
+            await conn.execute(text("ALTER TABLE articles ALTER COLUMN created_at TYPE TIMESTAMP WITH TIME ZONE USING created_at AT TIME ZONE 'UTC'"))
+            await conn.execute(text("ALTER TABLE sources ALTER COLUMN last_crawled_at TYPE TIMESTAMP WITH TIME ZONE USING last_crawled_at AT TIME ZONE 'UTC'"))
+            await conn.execute(text("ALTER TABLE sources ALTER COLUMN created_at TYPE TIMESTAMP WITH TIME ZONE USING created_at AT TIME ZONE 'UTC'"))
+            await conn.execute(text("ALTER TABLE sources ALTER COLUMN updated_at TYPE TIMESTAMP WITH TIME ZONE USING updated_at AT TIME ZONE 'UTC'"))
+        except Exception as e:
+            print(f"Timestamp migration notice: {e}")
+
         # Auto-migrate deep AI columns (Postgres JSON or SQLite TEXT/JSON)
         for col in ["architectural_tradeoffs", "nestjs_blueprint", "learning_path"]:
             try:
