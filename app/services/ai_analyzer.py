@@ -1,15 +1,18 @@
 import json
+import re
+from typing import Tuple, List, Optional
 from openai import AsyncOpenAI
 from app.core.config import settings
 from app.schemas.schemas import AIAnalysisResult
+from app.services.circuit_breaker import ai_circuit_breaker
 
-SYSTEM_PROMPT = """You are a Principal Backend & AI Systems Engineer, specializing in NestJS, TypeScript, Microservices, Distributed Systems, and AI Infrastructure (LLMs, Vector DBs, RAG, Agentic Workflows).
+BASE_SYSTEM_PROMPT = """You are a Principal Backend & AI Systems Engineer, specializing in NestJS, TypeScript, Microservices, Distributed Systems, and AI Infrastructure (LLMs, Vector DBs, RAG, Agentic Workflows).
 Your task is to analyze the provided technical article and output an in-depth, production-oriented evaluation for software engineers.
 
 Evaluation & Scoring Criteria:
 1. `relevance_score` (float between 1.0 and 10.0):
    - HIGH RELEVANCE (8.0 - 10.0): Practical tech breakthroughs, new releases from leading AI labs / tech firms, emerging industry shifts (AI Agents, Reasoning Models, Multimodal, On-Device AI, Distributed Systems), actionable developer tools, and high-impact system patterns.
-   - LOW RELEVANCE (below 5.0): Purely theoretical academic papers full of mathematical proofs without real-world software applicability (e.g. dense theoretical ArXiv proofs), shallow marketing/PR noise, sponsored puff pieces, or duplicate fluff.
+   - LOW RELEVANCE (below 5.0): Purely theoretical academic papers full of mathematical proofs without real-world software applicability, shallow marketing/PR noise, sponsored puff pieces, or duplicate fluff.
 2. `is_worth_reading` (boolean): true if `relevance_score` >= 7.0, otherwise false.
 3. `vietnamese_title`: A concise, professional, engaging Vietnamese title (100% natural Vietnamese). STRICTLY NO Chinese characters (no Hanzi/Kanji).
 4. `vietnamese_summary`: 3-5 concise, high-value sentences in 100% natural, fluent Vietnamese summarizing what problem this technology solves and the key implications. STRICTLY FORBIDDEN to include Chinese/Japanese characters.
@@ -83,19 +86,70 @@ def _clean_json_response(raw_text: str) -> dict:
     return json.loads(cleaned)
 
 
+def _build_calibrated_system_prompt(few_shot_examples: Optional[List[dict]] = None) -> str:
+    """Inject dynamically learned feedback examples into System Prompt (Module 6)"""
+    if not few_shot_examples:
+        return BASE_SYSTEM_PROMPT
+
+    examples_text = "\n\nUser Scoring Calibration Examples (Learn from past feedback):\n"
+    for ex in few_shot_examples[:3]:
+        examples_text += f"- Title: {ex.get('title')}\n  User Preference: {'HIGH VALUE (Thumbs Up)' if ex.get('type') == 'like' else 'LOW RELEVANCE (Thumbs Down)'}\n  Note: {ex.get('note', '')}\n"
+
+    return BASE_SYSTEM_PROMPT + examples_text
+
+
+def extractive_heuristic_fallback(title: str, content: str, url: str) -> AIAnalysisResult:
+    """Heuristic fallback when all AI models in the failover chain fail"""
+    cleaned_content = re.sub(r"\s+", " ", content).strip()
+    summary_words = cleaned_content.split()[:40]
+    fallback_summary = " ".join(summary_words) if summary_words else title
+    
+    # Infer basic tags from title/content
+    inferred_tags = []
+    lower_text = f"{title} {content}".lower()
+    for kw in ["ai", "llm", "backend", "python", "nestjs", "database", "postgres", "cloud", "security", "devops", "kubernetes", "rust", "golang"]:
+        if kw in lower_text:
+            inferred_tags.append(kw.upper() if kw in ["ai", "llm"] else kw.capitalize())
+    if not inferred_tags:
+        inferred_tags = ["Technology", "Engineering"]
+
+    slug = re.sub(r"[^a-zA-Z0-9]+", "-", title.lower()).strip("-")[:50] or "tech-update"
+
+    return AIAnalysisResult(
+        relevance_score=5.5,
+        is_worth_reading=False,
+        target_audience=["Software Engineer", "Backend Developer"],
+        vietnamese_title=title,
+        vietnamese_summary=f"Trích xuất tự động: {fallback_summary}...",
+        key_takeaways=[
+            "Xem bài viết đầy đủ tại đường dẫn nguồn.",
+            "Bản trích xuất tự động đảm bảo dữ liệu không bị thất thoát khi đường truyền AI gặp sự cố.",
+        ],
+        new_tech_stack=[],
+        tags=inferred_tags[:5],
+        architectural_tradeoffs=None,
+        nestjs_blueprint=None,
+        learning_path=None,
+        cluster_topic_key=slug,
+    )
+
+
 async def analyze_article_with_9router(
-    title: str, content: str, url: str
-) -> AIAnalysisResult:
-    # Limit timeout to 40.0s to avoid long blocking on slow tunnel/LLM responses
+    title: str, content: str, url: str, few_shot_examples: Optional[List[dict]] = None
+) -> Tuple[AIAnalysisResult, str]:
+    """
+    Multi-model AI analysis with Circuit Breaker and Failover Chain:
+    Gemini 2.5 Flash -> Claude 3.5 Haiku -> GPT-4o-mini -> Extractive Fallback
+    """
     client = AsyncOpenAI(
         base_url=settings.NINEROUTERS_BASE_URL,
         api_key=settings.NINEROUTERS_API_KEY,
-        timeout=40.0,
+        timeout=35.0,
     )
 
-    # Truncate content to max 3000 chars to avoid 9routers inference latency and 524 timeouts
     truncated_content = content[:3000] if content else title
-    prompt = f"""ARTICLE TITLE: {title}
+    system_prompt = _build_calibrated_system_prompt(few_shot_examples)
+    user_prompt = f"""ARTICLE TITLE: {title}
 SOURCE URL: {url}
 ARTICLE CONTENT:
 {truncated_content}
@@ -103,43 +157,43 @@ ARTICLE CONTENT:
 Analyze the article according to your system instructions. Output ONLY the required JSON object.
 """
 
-    try:
-        response = await client.chat.completions.create(
-            model=settings.AI_MODEL,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.3,
-        )
-        raw_answer = response.choices[0].message.content.strip()
-        data = _clean_json_response(raw_answer)
-        return AIAnalysisResult(**data)
-    except Exception as e:
-        # Graceful fallback if 9router times out, is unreachable, or encounters parsing errors
-        error_msg = str(e)
-        is_timeout = "timeout" in error_msg.lower() or "timed out" in error_msg.lower()
-        fallback_summary = (
-            f"Tóm tắt nhanh: Bài viết về '{title}' từ nguồn {url}. "
-            f"(Hệ thống tự động lưu trữ dự phòng do {'xử lý AI bị timeout' if is_timeout else '9routers AI tạm thời bận'})."
-        )
-        return AIAnalysisResult(
-            relevance_score=6.0,
-            is_worth_reading=False,
-            target_audience=["Developer", "Backend Engineer"],
-            vietnamese_title=title,
-            vietnamese_summary=fallback_summary,
-            key_takeaways=[
-                "Xem chi tiết toàn văn bài viết tại liên kết nguồn.",
-                "Hệ thống đã lưu trữ an toàn bài viết để tránh gián đoạn tiến trình cào tin.",
-            ],
-            new_tech_stack=[],
-            tags=["Engineering", "Tech"],
-            architectural_tradeoffs=None,
-            nestjs_blueprint=None,
-            learning_path=None,
-            cluster_topic_key=None,
-        )
+    models_to_try = settings.fallback_models_list
+    if not models_to_try:
+        models_to_try = [settings.AI_MODEL, "claude-3-5-haiku", "gpt-4o-mini"]
+
+    last_exception = None
+
+    for model_name in models_to_try:
+        if not ai_circuit_breaker.can_execute(model_name):
+            print(f"⚡ Circuit Breaker OPEN for {model_name}. Skipping to next fallback...")
+            continue
+
+        try:
+            response = await client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.3,
+            )
+            raw_answer = response.choices[0].message.content.strip()
+            data = _clean_json_response(raw_answer)
+            analysis = AIAnalysisResult(**data)
+            
+            ai_circuit_breaker.record_success(model_name)
+            return analysis, model_name
+
+        except Exception as err:
+            ai_circuit_breaker.record_failure(model_name)
+            last_exception = err
+            print(f"⚠️ Model {model_name} failed ({err}). Triggering failover...")
+            continue
+
+    # All AI providers failed or circuit open -> Extractive Heuristic Fallback
+    print(f"🚨 All AI models in failover chain exhausted ({last_exception}). Using Extractive Fallback.")
+    fallback_res = extractive_heuristic_fallback(title, content, url)
+    return fallback_res, "extractive-fallback"
 
 
 async def chat_with_article(
@@ -185,37 +239,47 @@ FOLLOW_UPS:
 
     messages.append({"role": "user", "content": user_message})
 
-    try:
-        response = await client.chat.completions.create(
-            model=settings.AI_MODEL,
-            messages=messages,
-            temperature=0.4,
-        )
-        raw_text = response.choices[0].message.content.strip()
+    # Try models with circuit breaker
+    models_to_try = settings.fallback_models_list or [settings.AI_MODEL, "claude-3-5-haiku", "gpt-4o-mini"]
 
-        suggested_followups = []
-        reply_body = raw_text
-        if "FOLLOW_UPS:" in raw_text:
-            parts = raw_text.split("FOLLOW_UPS:")
-            reply_body = parts[0].strip()
-            follow_lines = parts[1].strip().split("\n")
-            for line in follow_lines:
-                clean_line = line.strip().lstrip("-*•0123456789. ")
-                if clean_line:
-                    suggested_followups.append(clean_line)
+    for model_name in models_to_try:
+        if not ai_circuit_breaker.can_execute(model_name):
+            continue
+        try:
+            response = await client.chat.completions.create(
+                model=model_name,
+                messages=messages,
+                temperature=0.4,
+            )
+            raw_text = response.choices[0].message.content.strip()
 
-        return {
-            "reply": reply_body,
-            "suggested_followups": suggested_followups[:3],
-        }
-    except Exception as e:
-        return {
-            "reply": f"Hiện tại không thể kết nối tới mô hình AI để trả lời (Chi tiết: {str(e)[:150]}). Vui lòng thử lại sau.",
-            "suggested_followups": [
-                "Làm sao áp dụng bài viết này vào NestJS?",
-                "Những rủi ro về hiệu năng khi áp dụng là gì?",
-            ],
-        }
+            suggested_followups = []
+            reply_body = raw_text
+            if "FOLLOW_UPS:" in raw_text:
+                parts = raw_text.split("FOLLOW_UPS:")
+                reply_body = parts[0].strip()
+                follow_lines = parts[1].strip().split("\n")
+                for line in follow_lines:
+                    clean_line = line.strip().lstrip("-*•0123456789. ")
+                    if clean_line:
+                        suggested_followups.append(clean_line)
+
+            ai_circuit_breaker.record_success(model_name)
+            return {
+                "reply": reply_body,
+                "suggested_followups": suggested_followups[:3],
+            }
+        except Exception as err:
+            ai_circuit_breaker.record_failure(model_name)
+            continue
+
+    return {
+        "reply": "Hiện tại tất cả cổng AI đều đang bận hoặc quá tải. Vui lòng thử lại sau giây lát.",
+        "suggested_followups": [
+            "Làm sao áp dụng bài viết này vào NestJS?",
+            "Những rủi ro về hiệu năng khi áp dụng là gì?",
+        ],
+    }
 
 
 async def generate_weekly_radar_digest(top_articles: list) -> dict:
@@ -269,35 +333,43 @@ Return ONLY a valid JSON object matching this schema:
 Please generate the weekly tech radar digest JSON following the system instructions.
 """
 
-    try:
-        response = await client.chat.completions.create(
-            model=settings.AI_MODEL,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=0.3,
-        )
-        raw_text = response.choices[0].message.content.strip()
-        data = _clean_json_response(raw_text)
-        return data
-    except Exception as e:
-        return {
-            "week_label": "Báo cáo Radar Công nghệ Tuần này",
-            "dominant_trends": [
-                {
-                    "topic": "Hạ tầng AI & Backend NestJS",
-                    "status": "Trial",
-                    "summary": f"Tổng hợp cập nhật từ các nguồn tin công nghệ (Fallback: {str(e)[:80]})",
-                    "relevance": "Theo dõi các nâng cấp về RAG và async worker.",
-                }
-            ],
-            "architectural_shifts": [
-                "Gia tăng tích hợp Vector Database trực tiếp vào hạ tầng backend hiện có",
-                "Chuyển dịch sang mô hình Microservices phân tán với hàng đợi BullMQ/Kafka",
-            ],
-            "actionable_recommendations": [
-                "Khảo sát và benchmark pgvector trên PostgreSQL nội bộ",
-                "Xây dựng API gateway phân luồng traffic giữa API truyền thống và Agentic LLM flows",
-            ],
-        }
+    models_to_try = settings.fallback_models_list or [settings.AI_MODEL, "claude-3-5-haiku", "gpt-4o-mini"]
+    for model_name in models_to_try:
+        if not ai_circuit_breaker.can_execute(model_name):
+            continue
+        try:
+            response = await client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.3,
+            )
+            raw_text = response.choices[0].message.content.strip()
+            data = _clean_json_response(raw_text)
+            ai_circuit_breaker.record_success(model_name)
+            return data
+        except Exception as err:
+            ai_circuit_breaker.record_failure(model_name)
+            continue
+
+    return {
+        "week_label": "Báo cáo Radar Công nghệ Tuần này",
+        "dominant_trends": [
+            {
+                "topic": "Hạ tầng AI & Backend NestJS",
+                "status": "Trial",
+                "summary": "Tổng hợp cập nhật từ các nguồn tin công nghệ (Failover mode).",
+                "relevance": "Theo dõi các nâng cấp về RAG và async worker.",
+            }
+        ],
+        "architectural_shifts": [
+            "Gia tăng tích hợp Vector Database trực tiếp vào hạ tầng backend hiện có",
+            "Chuyển dịch sang mô hình Microservices phân tán với hàng đợi BullMQ/Kafka",
+        ],
+        "actionable_recommendations": [
+            "Khảo sát và benchmark pgvector trên PostgreSQL nội bộ",
+            "Xây dựng API gateway phân luồng traffic giữa API truyền thống và Agentic LLM flows",
+        ],
+    }
