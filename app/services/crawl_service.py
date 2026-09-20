@@ -1,12 +1,15 @@
+import time
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 import httpx
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.models.models import Source, Article
+from app.models.models import Source, Article, CrawlRun
 from app.crawlers.article_crawler import (
     fetch_rss_feed,
+    fetch_json_feed,
+    fetch_sitemap_feed,
     fetch_hacker_news,
     extract_clean_article_content,
     make_tz_aware,
@@ -18,19 +21,38 @@ from app.core.config import settings
 async def crawl_single_source(
     source: Source, db: AsyncSession, run_ai: bool = True
 ) -> int:
-    """Crawls a given source and optionally triggers 9routers AI analysis"""
+    """Crawls a given source (RSS, JSON Feed, Sitemap, HN) and tracks CrawlRun metrics"""
+    start_time = time.time()
+    started_at = datetime.now(timezone.utc)
     source.status = "pending"
     await db.commit()
 
+    articles_found = 0
     articles_added = 0
+    error_message = None
+    http_status = 200
+
     try:
         raw_items = []
-        if source.source_type == "hn" or "ycombinator.com" in source.url:
+        target_url = source.feed_url or source.url
+        source_type = (source.source_type or "").lower()
+
+        if source_type == "hn" or "ycombinator.com" in source.url:
             raw_items = await fetch_hacker_news()
-        elif source.feed_url:
-            raw_items = await fetch_rss_feed(source.feed_url)
+        elif source_type == "json":
+            raw_items = await fetch_json_feed(target_url)
+        elif source_type == "sitemap":
+            raw_items = await fetch_sitemap_feed(target_url)
+        elif source_type == "rss" or source.feed_url:
+            raw_items = await fetch_rss_feed(target_url)
         else:
-            raw_items = await fetch_rss_feed(source.url)
+            # Fallback attempt: rss, then direct
+            try:
+                raw_items = await fetch_rss_feed(source.url)
+            except Exception:
+                raw_items = []
+
+        articles_found = len(raw_items)
 
         for item in raw_items:
             # Check if already exists
@@ -61,9 +83,9 @@ async def crawl_single_source(
                 created_at=now_utc,
             )
 
-            # AI analysis with 9routers
+            # AI analysis with 9routers (multi-model fallback)
             if run_ai:
-                analysis = await analyze_article_with_9router(
+                analysis, model_used = await analyze_article_with_9router(
                     title=article.title, content=full_content, url=article.url
                 )
                 article.is_processed = True
@@ -93,7 +115,7 @@ async def crawl_single_source(
                     else {}
                 )
                 article.cluster_topic_key = analysis.cluster_topic_key
-                article.ai_model_used = settings.AI_MODEL
+                article.ai_model_used = model_used
 
             # Story Clustering & Deduplication within 48h window
             from app.services.clustering_service import assign_article_cluster
@@ -119,11 +141,20 @@ async def crawl_single_source(
             await db.commit()  # Commit each article safely to generate article.id
             articles_added += 1
 
-            # Smart Telegram Notification Trigger
+            # Generate and save embedding (Module 4)
+            try:
+                from app.services.embedding_service import generate_article_embedding
+                embed_vec = await generate_article_embedding(article)
+                if embed_vec:
+                    article.embedding = embed_vec
+                    await db.commit()
+            except Exception as emb_err:
+                print(f"Embedding generation notice: {emb_err}")
+
+            # Smart & Urgent Telegram Notification Trigger (Module 3)
             try:
                 cluster_sources = []
                 if article.cluster_id:
-                    # Find all distinct source names in this cluster
                     c_res = await db.execute(
                         select(Article)
                         .options(selectinload(Article.source))
@@ -144,12 +175,43 @@ async def crawl_single_source(
         source.last_crawled_at = datetime.now(timezone.utc)
         source.last_error = None
         source.articles_count = (source.articles_count or 0) + articles_added
+        
+        # Record successful CrawlRun
+        duration_ms = int((time.time() - start_time) * 1000)
+        crawl_run = CrawlRun(
+            source_id=source.id,
+            started_at=started_at,
+            finished_at=datetime.now(timezone.utc),
+            duration_ms=duration_ms,
+            http_status=http_status,
+            articles_found=articles_found,
+            articles_new=articles_added,
+            status="success",
+            error_message=None,
+        )
+        db.add(crawl_run)
         await db.commit()
 
     except Exception as e:
         await db.rollback()
+        duration_ms = int((time.time() - start_time) * 1000)
+        error_message = str(e)
         source.status = "error"
-        source.last_error = str(e)
+        source.last_error = error_message
+        
+        # Record failed CrawlRun
+        crawl_run = CrawlRun(
+            source_id=source.id,
+            started_at=started_at,
+            finished_at=datetime.now(timezone.utc),
+            duration_ms=duration_ms,
+            http_status=500,
+            articles_found=articles_found,
+            articles_new=articles_added,
+            status="failed",
+            error_message=error_message,
+        )
+        db.add(crawl_run)
         try:
             await db.commit()
         except Exception:
@@ -164,17 +226,25 @@ async def trigger_smart_article_notifications(
 ):
     """
     Quy tắc gửi thông báo Telegram:
-    Chỉ cần bài viết đạt relevance_score >= 7.5 là gửi thông báo ngay lập tức.
+    - Score >= 9.0: Gửi khẩn cấp Real-time Urgent Alert (Module 3)
+    - Score >= 7.5: Gửi thông báo tin tuyển chọn hoặc cụm tin nóng
     """
     from app.services.telegram_service import (
         format_elite_article_message,
         format_cluster_alert_message,
+        send_urgent_alert,
         send_telegram_message,
     )
 
-    # Nếu bài viết đạt từ 7.5 điểm AI trở lên -> Gửi thông báo ngay
-    if (article.relevance_score or 0.0) >= 7.5:
-        # Nếu bài viết thuộc sự kiện nóng được >= 3 nguồn cùng đưa tin
+    relevance = article.relevance_score or 0.0
+
+    # Module 3: Real-time Urgent Alert for score >= 9.0
+    if relevance >= settings.TELEGRAM_ALERT_THRESHOLD:
+        await send_urgent_alert(article)
+        return
+
+    # Normal smart alert for score >= 7.5
+    if relevance >= 7.5:
         unique_sources = list(dict.fromkeys(cluster_sources))
         if len(unique_sources) >= 3:
             cluster_data = {
@@ -188,7 +258,6 @@ async def trigger_smart_article_notifications(
             await send_telegram_message(msg, reply_markup=markup)
             return
 
-        # Mặc định: Gửi thông báo chi tiết bài viết tinh tuyển
         content_for_estimate = (
             article.raw_content or article.vietnamese_summary or article.title
         )

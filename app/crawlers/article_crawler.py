@@ -4,6 +4,7 @@ import feedparser
 import trafilatura
 from datetime import datetime, timezone
 from bs4 import BeautifulSoup
+from urllib.parse import urlparse
 
 headers = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
@@ -52,6 +53,99 @@ async def fetch_rss_feed(feed_url: str) -> list[dict]:
                 "author": getattr(entry, "author", None),
                 "published_at": make_tz_aware(pub_date),
                 "raw_content": summary_text[:4000] if summary_text else "",
+            }
+        )
+    return items
+
+
+async def fetch_json_feed(feed_url: str) -> list[dict]:
+    """Parse JSON Feed specification (RFC: version, items)"""
+    async with httpx.AsyncClient(
+        timeout=10.0, follow_redirects=True, headers=headers
+    ) as client:
+        resp = await client.get(feed_url)
+        resp.raise_for_status()
+        data = resp.json()
+
+    items = []
+    raw_items = data.get("items", []) if isinstance(data, dict) else []
+    for item in raw_items[:15]:
+        title = item.get("title") or ""
+        url = item.get("url") or item.get("id") or ""
+        author = item.get("author", {}).get("name") if isinstance(item.get("author"), dict) else item.get("author")
+        
+        pub_date = None
+        date_str = item.get("date_published") or item.get("date_modified")
+        if date_str:
+            try:
+                pub_date = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+            except Exception:
+                pass
+
+        content_text = item.get("content_text") or item.get("content_html") or item.get("summary") or ""
+        if content_text and "<" in content_text:
+            s_soup = BeautifulSoup(content_text, "html.parser")
+            content_text = s_soup.get_text()
+
+        items.append(
+            {
+                "title": title.strip(),
+                "url": url.strip(),
+                "author": author,
+                "published_at": make_tz_aware(pub_date) or datetime.now(timezone.utc),
+                "raw_content": content_text[:4000] if content_text else "",
+            }
+        )
+    return items
+
+
+async def fetch_sitemap_feed(sitemap_url: str) -> list[dict]:
+    """Parse sitemap.xml or sitemapindex.xml to extract recent article URLs"""
+    async with httpx.AsyncClient(
+        timeout=10.0, follow_redirects=True, headers=headers
+    ) as client:
+        resp = await client.get(sitemap_url)
+        resp.raise_for_status()
+        xml_text = resp.text
+
+    soup = BeautifulSoup(xml_text, "html.parser")
+    items = []
+    
+    # Check for urlset (<url><loc>...</loc><lastmod>...</lastmod></url>)
+    url_tags = soup.find_all("url")
+    if not url_tags:
+        # Might be sitemapindex
+        sitemap_tags = soup.find_all("sitemap")
+        if sitemap_tags:
+            # fetch the first child sitemap
+            first_loc = sitemap_tags[0].find("loc")
+            if first_loc and first_loc.get_text():
+                return await fetch_sitemap_feed(first_loc.get_text().strip())
+
+    for u in url_tags[:15]:
+        loc_tag = u.find("loc")
+        if not loc_tag or not loc_tag.get_text():
+            continue
+        url = loc_tag.get_text().strip()
+        lastmod_tag = u.find("lastmod")
+        pub_date = None
+        if lastmod_tag and lastmod_tag.get_text():
+            try:
+                pub_date = datetime.fromisoformat(lastmod_tag.get_text().strip().replace("Z", "+00:00"))
+            except Exception:
+                pass
+        
+        # Extract title from slug as initial title placeholder
+        parsed_path = urlparse(url).path.strip("/").split("/")[-1].replace("-", " ").replace("_", " ").title()
+        title = parsed_path if parsed_path else url
+
+        items.append(
+            {
+                "title": title,
+                "url": url,
+                "author": None,
+                "published_at": make_tz_aware(pub_date) or datetime.now(timezone.utc),
+                "raw_content": "",
             }
         )
     return items

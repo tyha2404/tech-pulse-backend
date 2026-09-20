@@ -77,12 +77,18 @@ async def list_sources(db: AsyncSession = Depends(get_db)):
 
 @router.post("/sources/test", response_model=CrawlTestResult)
 async def test_source_url(
-    target_url: str = Query(..., description="URL website or RSS"),
+    target_url: str = Query(..., description="URL website, RSS, JSON Feed, or Sitemap"),
 ):
     try:
         detected_type, feed_or_url = await discover_feed_url(target_url)
         if detected_type == "hn":
             items = await fetch_hacker_news()
+        elif detected_type == "json":
+            from app.crawlers.article_crawler import fetch_json_feed
+            items = await fetch_json_feed(feed_or_url)
+        elif detected_type == "sitemap":
+            from app.crawlers.article_crawler import fetch_sitemap_feed
+            items = await fetch_sitemap_feed(feed_or_url)
         else:
             items = await fetch_rss_feed(feed_or_url)
 
@@ -90,7 +96,7 @@ async def test_source_url(
         return CrawlTestResult(
             success=True,
             detected_type=detected_type,
-            feed_url=feed_or_url if detected_type == "rss" else None,
+            feed_url=feed_or_url if detected_type in ["rss", "json", "sitemap"] else None,
             items_count=len(items),
             sample_titles=sample_titles,
         )
@@ -118,7 +124,7 @@ async def create_source(payload: SourceCreate, db: AsyncSession = Depends(get_db
     if not feed_url:
         detected_type, discovered = await discover_feed_url(payload.url)
         source_type = detected_type
-        if detected_type == "rss":
+        if detected_type in ["rss", "json", "sitemap"]:
             feed_url = discovered
 
     new_source = Source(
