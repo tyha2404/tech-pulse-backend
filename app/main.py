@@ -422,13 +422,29 @@ async def lifespan(app: FastAPI):
                     "CREATE INDEX IF NOT EXISTS idx_articles_cluster_id ON articles(cluster_id)"
                 )
             )
+        # Auto-migrate pgvector and embedding column
+        try:
+            await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+        except Exception as e:
+            print(f"pgvector extension notice (may not have superuser or already active): {e}")
+
+        try:
             await conn.execute(
                 text(
-                    "CREATE INDEX IF NOT EXISTS idx_articles_is_canonical ON articles(is_canonical)"
+                    "ALTER TABLE articles ADD COLUMN IF NOT EXISTS embedding vector(1536)"
                 )
             )
         except Exception as e:
-            print(f"Clustering migration notice: {e}")
+            print(f"Embedding column migration notice: {e}")
+
+        try:
+            await conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS idx_articles_embedding ON articles USING hnsw (embedding vector_cosine_ops)"
+                )
+            )
+        except Exception as e:
+            print(f"Vector index notice: {e}")
 
     # Sync and seed default sources if any are missing
     async with AsyncSessionLocal() as db:

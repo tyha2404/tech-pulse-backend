@@ -11,6 +11,7 @@ from sqlalchemy import (
     ForeignKey,
 )
 from sqlalchemy.orm import relationship
+from pgvector.sqlalchemy import Vector
 from app.core.database import Base
 
 
@@ -24,8 +25,8 @@ class Source(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(255), nullable=False)
     url = Column(String(1024), unique=True, nullable=False)
-    feed_url = Column(String(1024), nullable=True)  # If discovered RSS feed
-    source_type = Column(String(50), default="rss")  # rss, api, scraper
+    feed_url = Column(String(1024), nullable=True)  # RSS / Atom / JSON Feed / Sitemap URL
+    source_type = Column(String(50), default="rss")  # rss, json, sitemap, api, scraper
     category = Column(
         String(100), default="General"
     )  # AI, Backend, General, VN, Global
@@ -43,6 +44,27 @@ class Source(Base):
     articles = relationship(
         "Article", back_populates="source", cascade="all, delete-orphan"
     )
+    crawl_runs = relationship(
+        "CrawlRun", back_populates="source", cascade="all, delete-orphan"
+    )
+
+
+class CrawlRun(Base):
+    __tablename__ = "crawl_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    source_id = Column(Integer, ForeignKey("sources.id"), nullable=False, index=True)
+    started_at = Column(DateTime(timezone=True), default=utc_now)
+    finished_at = Column(DateTime(timezone=True), nullable=True)
+    duration_ms = Column(Integer, default=0)
+    http_status = Column(Integer, nullable=True)
+    articles_found = Column(Integer, default=0)
+    articles_new = Column(Integer, default=0)
+    status = Column(String(50), default="success")  # success, warning, failed
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+
+    source = relationship("Source", back_populates="crawl_runs")
 
 
 class Article(Base):
@@ -85,6 +107,9 @@ class Article(Base):
     )  # {prerequisites, recommended_next_topics}
     ai_model_used = Column(String(100), nullable=True)
 
+    # Semantic Search Vector (1536 dim)
+    embedding = Column(Vector(1536), nullable=True)
+
     # Story Clustering & Deduplication
     cluster_id = Column(String(100), nullable=True, index=True)
     is_canonical = Column(Boolean, default=True, index=True)
@@ -93,3 +118,32 @@ class Article(Base):
     created_at = Column(DateTime(timezone=True), default=utc_now)
 
     source = relationship("Source", back_populates="articles")
+    feedbacks = relationship(
+        "ArticleFeedback", back_populates="article", cascade="all, delete-orphan"
+    )
+
+
+class ArticleFeedback(Base):
+    __tablename__ = "article_feedbacks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    article_id = Column(Integer, ForeignKey("articles.id"), nullable=False, index=True)
+    user_id = Column(String(100), default="default_user", index=True)
+    feedback_type = Column(String(50), nullable=False)  # like, dislike, bookmark, read, hide
+    source = Column(String(50), default="web")  # web, telegram
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+
+    article = relationship("Article", back_populates="feedbacks")
+
+
+class UserPreference(Base):
+    __tablename__ = "user_preferences"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(String(100), unique=True, nullable=False, index=True)
+    topic_weights = Column(JSON, default=dict)  # {"Backend": 1.5, "AI": 2.0, "Crypto": 0.1}
+    preferred_sources = Column(JSON, default=list)  # [1, 3, 5]
+    profile_embedding = Column(Vector(1536), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
