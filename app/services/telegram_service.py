@@ -1,4 +1,5 @@
 import html
+import time
 import logging
 from typing import Dict, Any, List, Optional, Tuple
 import httpx
@@ -6,14 +7,99 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Telegram API does not allow 'localhost' as inline button domain; use 127.0.0.1 or production domain
 FRONTEND_URL = getattr(settings, "FRONTEND_URL", "http://127.0.0.1:5174")
+
+# In-memory rate limiter for urgent alerts
+_urgent_alert_timestamps: List[float] = []
 
 
 def escape_html(text: Optional[str]) -> str:
     if not text:
         return ""
     return html.escape(str(text))
+
+
+def _check_urgent_rate_limit() -> bool:
+    """Returns True if within rate limit, False if throttled"""
+    global _urgent_alert_timestamps
+    now = time.time()
+    one_hour_ago = now - 3600.0
+    # Clean up older than 1 hour
+    _urgent_alert_timestamps = [t for t in _urgent_alert_timestamps if t > one_hour_ago]
+    if len(_urgent_alert_timestamps) >= settings.TELEGRAM_ALERT_MAX_PER_HOUR:
+        return False
+    _urgent_alert_timestamps.append(now)
+    return True
+
+
+def format_urgent_alert_message(article: Any) -> Tuple[str, Dict[str, Any]]:
+    """Format real-time urgent push for score >= 9.0 with inline feedback buttons"""
+    article_id = getattr(article, "id", None)
+    title = escape_html(
+        getattr(article, "vietnamese_title", None)
+        or getattr(article, "title", None)
+        or "Tin đột phá công nghệ"
+    )
+    score = getattr(article, "relevance_score", 9.0) or 9.0
+    source_name = escape_html(
+        article.source.name if hasattr(article, "source") and article.source else "TechPulse"
+    )
+    summary = escape_html(
+        getattr(article, "vietnamese_summary", None)
+        or getattr(article, "title", None)
+        or ""
+    )
+    url = getattr(article, "url", FRONTEND_URL)
+    takeaways = getattr(article, "key_takeaways", []) or []
+    tech_stacks = getattr(article, "new_tech_stacks", []) or []
+    tags = getattr(article, "tags", []) or []
+
+    lines = [
+        f"🚨 <b>[TECHPULSE BREAKING / MUST READ] ⭐ {score:.1f}/10</b>",
+        "",
+        f"📌 <b>{title}</b>",
+        f"🌐 <i>Nguồn: {source_name}</i>",
+        "",
+        f"📝 {summary}",
+    ]
+
+    if takeaways:
+        lines.append("")
+        lines.append("💡 <b>Điểm cốt lõi kỹ thuật:</b>")
+        for pt in takeaways[:3]:
+            lines.append(f"• {escape_html(pt)}")
+
+    if tech_stacks:
+        tech_names = [escape_html(t.get("name") if isinstance(t, dict) else str(t)) for t in tech_stacks[:3]]
+        lines.append("")
+        lines.append(f"🛠 <b>Tech Stack phát hiện:</b> {', '.join(tech_names)}")
+
+    if tags:
+        tag_str = " ".join([f"#{t.replace(' ', '_').replace('-', '_')}" for t in tags[:5]])
+        lines.append("")
+        lines.append(f"🏷 {escape_html(tag_str)}")
+
+    msg = "\n".join(lines)
+
+    webapp_url = (
+        f"{FRONTEND_URL}/?article_id={article_id}" if article_id else FRONTEND_URL
+    )
+
+    # Inline feedback buttons & action links
+    reply_markup = {
+        "inline_keyboard": [
+            [
+                {"text": "👍 Hữu ích", "callback_data": f"fb:like:{article_id}"},
+                {"text": "👎 Kém", "callback_data": f"fb:dislike:{article_id}"},
+                {"text": "🔖 Lưu bài", "callback_data": f"fb:bm:{article_id}"},
+            ],
+            [
+                {"text": "📖 Đọc bài gốc ↗", "url": url},
+                {"text": "⚡ Mở TechPulse ↗", "url": webapp_url},
+            ],
+        ]
+    }
+    return msg, reply_markup
 
 
 def format_elite_article_message(article: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
@@ -60,8 +146,11 @@ def format_elite_article_message(article: Dict[str, Any]) -> Tuple[str, Dict[str
     reply_markup = {
         "inline_keyboard": [
             [
-                {"text": "📖 Đọc bài gốc ↗", "url": url},
-                {"text": "⚡ Mở TechPulse ↗", "url": webapp_url},
+                {"text": "👍", "callback_data": f"fb:like:{article_id}"},
+                {"text": "👎", "callback_data": f"fb:dislike:{article_id}"},
+                {"text": "🔖", "callback_data": f"fb:bm:{article_id}"},
+                {"text": "📖 Đọc gốc ↗", "url": url},
+                {"text": "⚡ TechPulse ↗", "url": webapp_url},
             ]
         ]
     }
@@ -132,7 +221,6 @@ def _sanitize_reply_markup_urls(
     for row in inline_keyboard:
         for btn in row:
             if "url" in btn and isinstance(btn["url"], str):
-                # Telegram strictly rejects 'localhost' in button URLs
                 btn["url"] = (
                     btn["url"]
                     .replace("http://localhost", "http://127.0.0.1")
@@ -172,56 +260,25 @@ async def send_telegram_message(
     return False
 
 
-async def dispatch_daily_espresso_digest(
-    title_label: str = "☕ Morning Tech Espresso (8:00 AM)",
-) -> bool:
-    """
-    Queries top articles from the last 24 hours, formats a digest and sends it to Telegram.
-    """
-    import datetime
-    from sqlalchemy import select
-    from app.core.database import AsyncSessionLocal
-    from app.models.models import Article
+async def send_urgent_alert(article: Any) -> bool:
+    """Send immediate alert for score >= 9.0 with rate limit protection"""
+    if not _check_urgent_rate_limit():
+        logger.info("Urgent alert throttled (exceeded max per hour)")
+        return False
 
-    since = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=24)
-    async with AsyncSessionLocal() as db:
-        stmt = (
-            select(Article)
-            .where(
-                Article.created_at >= since,
-                Article.is_canonical == True,
-                Article.is_hidden == False,
-            )
-            .order_by(Article.relevance_score.desc(), Article.id.desc())
-            .limit(3)
-        )
-        res = await db.execute(stmt)
-        articles = res.scalars().all()
+    msg, markup = format_urgent_alert_message(article)
+    return await send_telegram_message(msg, reply_markup=markup)
 
-        if not articles:
-            # Fallback to recent top articles if none in 24h
-            fallback_stmt = (
-                select(Article)
-                .where(Article.is_canonical == True, Article.is_hidden == False)
-                .order_by(Article.relevance_score.desc(), Article.id.desc())
-                .limit(3)
-            )
-            res = await db.execute(fallback_stmt)
-            articles = res.scalars().all()
 
-        if not articles:
-            return False
-
-        data_list = [
-            {
-                "id": a.id,
-                "title": a.title,
-                "vietnamese_title": a.vietnamese_title,
-                "relevance_score": a.relevance_score,
-                "url": a.url,
-            }
-            for a in articles
-        ]
-
-        msg, markup = format_espresso_digest_message(data_list, title_label)
-        return await send_telegram_message(msg, reply_markup=markup)
+async def answer_telegram_callback(callback_query_id: str, text: str) -> bool:
+    bot_token = settings.TELEGRAM_BOT_TOKEN
+    if not bot_token:
+        return False
+    url = f"https://api.telegram.org/bot{bot_token}/answerCallbackQuery"
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.post(url, json={"callback_query_id": callback_query_id, "text": text})
+            return resp.status_code == 200
+    except Exception as e:
+        logger.error(f"Failed to answer callback: {e}")
+        return False
