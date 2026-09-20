@@ -422,6 +422,9 @@ async def lifespan(app: FastAPI):
                     "CREATE INDEX IF NOT EXISTS idx_articles_cluster_id ON articles(cluster_id)"
                 )
             )
+        except Exception as e:
+            print(f"Clustering migration notice: {e}")
+
         # Auto-migrate pgvector and embedding column
         try:
             await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
