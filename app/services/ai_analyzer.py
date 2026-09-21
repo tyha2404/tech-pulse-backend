@@ -71,6 +71,7 @@ Return ONLY a valid JSON object matching this schema (do not wrap in markdown or
 
 
 def _clean_json_response(raw_text: str) -> dict:
+    """Extract and robustly clean JSON dictionary from LLM completion text"""
     cleaned = raw_text.strip()
     if "```" in cleaned:
         parts = cleaned.split("```")
@@ -83,7 +84,69 @@ def _clean_json_response(raw_text: str) -> dict:
             except Exception:
                 continue
     # Try direct parse
-    return json.loads(cleaned)
+    try:
+        return json.loads(cleaned)
+    except Exception:
+        # Regex search for first JSON object {...}
+        match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group(0))
+            except Exception:
+                pass
+        raise ValueError(f"Failed to parse valid JSON from AI response: {cleaned[:100]}...")
+
+
+def sanitize_and_validate_analysis(raw_data: dict, fallback_title: str, fallback_content: str, url: str) -> AIAnalysisResult:
+    """
+    Partial-failure resilient builder: ensures that even if individual sub-objects (like NestJS blueprint)
+    have syntax flaws, the high-value summary & takeaways remain intact without blowing up the analysis.
+    """
+    # 1. Ensure essential numeric and text types
+    score = float(raw_data.get("relevance_score", 6.0) or 6.0)
+    score = max(1.0, min(10.0, score))
+    is_worth = bool(raw_data.get("is_worth_reading", score >= 7.0))
+    vi_title = str(raw_data.get("vietnamese_title") or fallback_title).strip()
+    vi_summary = str(raw_data.get("vietnamese_summary") or fallback_content[:300]).strip()
+
+    # 2. Resilient nested models parsing
+    tradeoffs_data = raw_data.get("architectural_tradeoffs")
+    blueprint_data = raw_data.get("nestjs_blueprint")
+    learning_data = raw_data.get("learning_path")
+
+    tradeoffs = None
+    if isinstance(tradeoffs_data, dict) and tradeoffs_data:
+        try:
+            from app.schemas.schemas import ArchitecturalTradeoffs
+            tradeoffs = ArchitecturalTradeoffs(**tradeoffs_data)
+        except Exception:
+            tradeoffs = None
+
+    blueprint = None
+    if isinstance(blueprint_data, dict) and blueprint_data:
+        try:
+            from app.schemas.schemas import NestJSBlueprint
+            blueprint = NestJSBlueprint(**blueprint_data)
+        except Exception:
+            blueprint = None
+
+    learning = None
+    if isinstance(learning_data, dict) and learning_data:
+        try:
+            from app.schemas.schemas import LearningPath
+            learning = LearningPath(**learning_data)
+        except Exception:
+            learning = None
+
+    raw_data["relevance_score"] = score
+    raw_data["is_worth_reading"] = is_worth
+    raw_data["vietnamese_title"] = vi_title
+    raw_data["vietnamese_summary"] = vi_summary
+    raw_data["architectural_tradeoffs"] = tradeoffs
+    raw_data["nestjs_blueprint"] = blueprint
+    raw_data["learning_path"] = learning
+
+    return AIAnalysisResult(**raw_data)
 
 
 def _build_calibrated_system_prompt(few_shot_examples: Optional[List[dict]] = None) -> str:
@@ -179,7 +242,12 @@ Analyze the article according to your system instructions. Output ONLY the requi
             )
             raw_answer = response.choices[0].message.content.strip()
             data = _clean_json_response(raw_answer)
-            analysis = AIAnalysisResult(**data)
+            analysis = sanitize_and_validate_analysis(
+                raw_data=data,
+                fallback_title=title,
+                fallback_content=content,
+                url=url,
+            )
             
             ai_circuit_breaker.record_success(model_name)
             return analysis, model_name

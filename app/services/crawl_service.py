@@ -1,10 +1,13 @@
 import time
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
+
 import httpx
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.config import settings
 from app.models.models import Source, Article, CrawlRun
 from app.crawlers.article_crawler import (
     fetch_rss_feed,
@@ -15,7 +18,16 @@ from app.crawlers.article_crawler import (
     make_tz_aware,
 )
 from app.services.ai_analyzer import analyze_article_with_9router
-from app.core.config import settings
+from app.services.clustering_service import assign_article_cluster
+from app.services.embedding_service import generate_article_embedding
+from app.services.triage_service import fast_triage_article
+from app.services.telegram_service import (
+    format_elite_article_message,
+    format_cluster_alert_message,
+    send_urgent_alert,
+    send_instant_flash_alert,
+    send_telegram_message,
+)
 
 
 async def crawl_single_source(
@@ -83,43 +95,77 @@ async def crawl_single_source(
                 created_at=now_utc,
             )
 
-            # AI analysis with 9routers (multi-model fallback)
+            # Tier-1 Fast Triage (System One / Jev pattern)
+            triage_res, triage_model = await fast_triage_article(
+                title=article.title, snippet=full_content[:500], url=article.url
+            )
+
+            # Speculative Fan-out: If critical breaking news detected, dispatch Flash Alert in <200ms
+            flash_alert_dispatched = False
+            if triage_res.is_breaking_news or triage_res.urgency_level == "CRITICAL":
+                try:
+                    await send_instant_flash_alert(
+                        title=article.title,
+                        url=article.url,
+                        source_name=source.name,
+                        snippet=full_content[:300],
+                        depth_score=triage_res.tech_depth_score,
+                    )
+                    flash_alert_dispatched = True
+                    print(f"[Flash Breaking Alert] Dispatched instantly for: '{article.title[:50]}'")
+                except Exception as flash_err:
+                    print(f"[Flash Alert Notice] {flash_err}")
+
+            # Confidence-Gated Routing:
+            # If high confidence discard (spam/marketing/non-tech), drop or skip full AI
+            if triage_res.suggested_priority == "DISCARD" and triage_res.confidence >= 0.80:
+                print(f"[Triage DISCARD] '{article.title[:50]}' via {triage_model} (confidence: {triage_res.confidence})")
+                continue
+
+            # Full AI analysis with 9routers (multi-model fallback)
             if run_ai:
-                analysis, model_used = await analyze_article_with_9router(
-                    title=article.title, content=full_content, url=article.url
-                )
-                article.is_processed = True
-                article.is_worth_reading = analysis.is_worth_reading
-                article.relevance_score = analysis.relevance_score
-                article.vietnamese_title = analysis.vietnamese_title
-                article.vietnamese_summary = analysis.vietnamese_summary
-                article.key_takeaways = analysis.key_takeaways
-                article.new_tech_stacks = [
-                    t.model_dump() for t in analysis.new_tech_stack
-                ]
-                article.tags = analysis.tags
-                article.target_audience = analysis.target_audience
-                article.architectural_tradeoffs = (
-                    analysis.architectural_tradeoffs.model_dump()
-                    if analysis.architectural_tradeoffs
-                    else {}
-                )
-                article.nestjs_blueprint = (
-                    analysis.nestjs_blueprint.model_dump()
-                    if analysis.nestjs_blueprint
-                    else {}
-                )
-                article.learning_path = (
-                    analysis.learning_path.model_dump()
-                    if analysis.learning_path
-                    else {}
-                )
-                article.cluster_topic_key = analysis.cluster_topic_key
-                article.ai_model_used = model_used
+                if triage_res.suggested_priority == "STORE_UNANALYZED" and triage_res.confidence >= 0.85:
+                    # Light record without heavy NestJS Blueprint generation
+                    article.is_processed = True
+                    article.is_worth_reading = False
+                    article.relevance_score = 4.0
+                    article.vietnamese_title = article.title
+                    article.vietnamese_summary = full_content[:200]
+                    article.ai_model_used = f"{triage_model}-light"
+                else:
+                    analysis, model_used = await analyze_article_with_9router(
+                        title=article.title, content=full_content, url=article.url
+                    )
+                    article.is_processed = True
+                    article.is_worth_reading = analysis.is_worth_reading
+                    article.relevance_score = analysis.relevance_score
+                    article.vietnamese_title = analysis.vietnamese_title
+                    article.vietnamese_summary = analysis.vietnamese_summary
+                    article.key_takeaways = analysis.key_takeaways
+                    article.new_tech_stacks = [
+                        t.model_dump() for t in analysis.new_tech_stack
+                    ]
+                    article.tags = analysis.tags
+                    article.target_audience = analysis.target_audience
+                    article.architectural_tradeoffs = (
+                        analysis.architectural_tradeoffs.model_dump()
+                        if analysis.architectural_tradeoffs
+                        else {}
+                    )
+                    article.nestjs_blueprint = (
+                        analysis.nestjs_blueprint.model_dump()
+                        if analysis.nestjs_blueprint
+                        else {}
+                    )
+                    article.learning_path = (
+                        analysis.learning_path.model_dump()
+                        if analysis.learning_path
+                        else {}
+                    )
+                    article.cluster_topic_key = analysis.cluster_topic_key
+                    article.ai_model_used = model_used
 
             # Story Clustering & Deduplication within 48h window
-            from app.services.clustering_service import assign_article_cluster
-
             since_time = datetime.now(timezone.utc) - timedelta(hours=48)
             recent_res = await db.execute(
                 select(Article).where(Article.created_at >= since_time)
@@ -143,7 +189,6 @@ async def crawl_single_source(
 
             # Generate and save embedding (Module 4)
             try:
-                from app.services.embedding_service import generate_article_embedding
                 embed_vec = await generate_article_embedding(article)
                 if embed_vec:
                     article.embedding = embed_vec
@@ -165,7 +210,9 @@ async def crawl_single_source(
                         a.source.name for a in c_articles if a.source and a.source.name
                     ]
                 await trigger_smart_article_notifications(
-                    article, cluster_sources=cluster_sources
+                    article,
+                    cluster_sources=cluster_sources,
+                    skip_urgent_if_flashed=flash_alert_dispatched,
                 )
             except Exception as noti_err:
                 print(f"Notification error: {noti_err}")
@@ -222,25 +269,21 @@ async def crawl_single_source(
 
 
 async def trigger_smart_article_notifications(
-    article: Article, cluster_sources: List[str] = []
+    article: Article,
+    cluster_sources: List[str] = [],
+    skip_urgent_if_flashed: bool = False,
 ):
     """
     Quy tắc gửi thông báo Telegram:
-    - Score >= 9.0: Gửi khẩn cấp Real-time Urgent Alert (Module 3)
+    - Score >= 9.0: Gửi khẩn cấp Real-time Urgent Alert (Module 3) nếu chưa bắn Flash Alert
     - Score >= 7.5: Gửi thông báo tin tuyển chọn hoặc cụm tin nóng
     """
-    from app.services.telegram_service import (
-        format_elite_article_message,
-        format_cluster_alert_message,
-        send_urgent_alert,
-        send_telegram_message,
-    )
-
     relevance = article.relevance_score or 0.0
 
-    # Module 3: Real-time Urgent Alert for score >= 9.0
+    # Module 3: Real-time Urgent Alert for score >= 9.0 (unless already sent via Flash Alert)
     if relevance >= settings.TELEGRAM_ALERT_THRESHOLD:
-        await send_urgent_alert(article)
+        if not skip_urgent_if_flashed:
+            await send_urgent_alert(article)
         return
 
     # Normal smart alert for score >= 7.5

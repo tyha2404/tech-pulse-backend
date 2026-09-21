@@ -1,9 +1,15 @@
+import copy
 import html
-import time
 import logging
-from typing import Dict, Any, List, Optional, Tuple
+import time
+from typing import Any, Dict, List, Optional, Tuple
+
 import httpx
+from sqlalchemy.future import select
+
 from app.core.config import settings
+from app.core.database import AsyncSessionLocal
+from app.models.models import Article
 
 logger = logging.getLogger(__name__)
 
@@ -214,7 +220,6 @@ def _sanitize_reply_markup_urls(
 ) -> Optional[Dict[str, Any]]:
     if not reply_markup:
         return reply_markup
-    import copy
 
     markup = copy.deepcopy(reply_markup)
     inline_keyboard = markup.get("inline_keyboard", [])
@@ -260,6 +265,63 @@ async def send_telegram_message(
     return False
 
 
+def format_flash_alert_message(
+    title: str,
+    url: str,
+    source_name: str,
+    snippet: str,
+    depth_score: float = 9.0,
+) -> Tuple[str, Dict[str, Any]]:
+    """Format lightweight, instant <200ms Flash Alert from Jev System-1 Triage"""
+    safe_title = escape_html(title)
+    safe_source = escape_html(source_name or "TechPulse Radar")
+    safe_snippet = escape_html(snippet[:280] if snippet else title)
+
+    lines = [
+        f"⚡ <b>[TECHPULSE FLASH BREAKING] ⭐ {depth_score:.1f}/10</b>",
+        "",
+        f"🚨 <b>{safe_title}</b>",
+        f"🌐 <i>Nguồn: {safe_source}</i>",
+        "",
+        f"📝 {safe_snippet}...",
+        "",
+        "⏳ <i>Đang phân tích chuyên sâu NestJS Blueprint & Trade-offs...</i>",
+    ]
+    msg = "\n".join(lines)
+
+    reply_markup = {
+        "inline_keyboard": [
+            [
+                {"text": "📖 Đọc bài gốc ↗", "url": url},
+                {"text": "⚡ Mở TechPulse Webapp ↗", "url": FRONTEND_URL},
+            ]
+        ]
+    }
+    return msg, reply_markup
+
+
+async def send_instant_flash_alert(
+    title: str,
+    url: str,
+    source_name: str,
+    snippet: str,
+    depth_score: float = 9.0,
+) -> bool:
+    """Dispatches speculative instant Flash Alert to Telegram without waiting for LLM"""
+    if not _check_urgent_rate_limit():
+        logger.info("Flash alert throttled by rate limiter")
+        return False
+
+    msg, markup = format_flash_alert_message(
+        title=title,
+        url=url,
+        source_name=source_name,
+        snippet=snippet,
+        depth_score=depth_score,
+    )
+    return await send_telegram_message(msg, reply_markup=markup)
+
+
 async def send_urgent_alert(article: Any) -> bool:
     """Send immediate alert for score >= 9.0 with rate limit protection"""
     if not _check_urgent_rate_limit():
@@ -268,6 +330,33 @@ async def send_urgent_alert(article: Any) -> bool:
 
     msg, markup = format_urgent_alert_message(article)
     return await send_telegram_message(msg, reply_markup=markup)
+
+
+async def dispatch_daily_espresso_digest(title_label: str = "☕ TechPulse Daily Espresso") -> bool:
+    """Dispatches top curated articles to Telegram subscribers as scheduled briefing"""
+    async with AsyncSessionLocal() as db:
+        res = await db.execute(
+            select(Article)
+            .where(Article.is_worth_reading == True, Article.is_canonical == True)
+            .order_by(Article.created_at.desc(), Article.relevance_score.desc())
+            .limit(5)
+        )
+        articles = res.scalars().all()
+        if not articles:
+            return False
+
+        art_dicts = [
+            {
+                "id": a.id,
+                "title": a.title,
+                "vietnamese_title": a.vietnamese_title,
+                "relevance_score": a.relevance_score,
+                "url": a.url,
+            }
+            for a in articles
+        ]
+        msg, markup = format_espresso_digest_message(art_dicts, title_label=title_label)
+        return await send_telegram_message(msg, reply_markup=markup)
 
 
 async def answer_telegram_callback(callback_query_id: str, text: str) -> bool:

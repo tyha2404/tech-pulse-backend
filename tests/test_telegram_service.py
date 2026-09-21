@@ -34,7 +34,7 @@ def test_format_elite_article_message():
     assert "inline_keyboard" in reply_markup
     # Verify button urls
     buttons = reply_markup["inline_keyboard"][0]
-    assert any("bytebytego.com" in b["url"] for b in buttons)
+    assert any(b.get("url") and "bytebytego.com" in b["url"] for b in buttons)
 
 
 def test_format_cluster_alert_message():

@@ -126,6 +126,31 @@ class ArticleResponse(BaseModel):
         from_attributes = True
 
 
+from enum import Enum
+import re
+from pydantic import field_validator
+
+
+class EngineeringPersonaEnum(str, Enum):
+    BACKEND_ENGINEER = "Backend NestJS / Node.js Engineer"
+    AI_SYSTEMS_ENGINEER = "AI Systems / Infrastructure Engineer"
+    DEVOPS_SRE = "DevOps / SRE / Cloud Engineer"
+    SOLUTIONS_ARCHITECT = "Solutions Architect"
+    TECH_LEAD = "Tech Lead / Engineering Manager"
+    FULLSTACK_DEVELOPER = "Full-Stack Developer"
+    SECURITY_ENGINEER = "Security & Compliance Engineer"
+
+
+class ArchitecturalPatternEnum(str, Enum):
+    HEXAGONAL = "Hexagonal / Ports & Adapters"
+    CQRS_EVENT_SOURCING = "CQRS with Event Sourcing"
+    EVENT_DRIVEN = "Event-Driven Microservices"
+    MODULAR_MONOLITH = "Modular Monolith"
+    CLEAN_ARCHITECTURE = "Clean Architecture"
+    REPOSITORY_SERVICE = "Repository & Service Pattern"
+    MICRO_FRONTENDS = "Micro-Frontends"
+
+
 class AIAnalysisResult(BaseModel):
     relevance_score: float
     is_worth_reading: bool
@@ -139,6 +164,61 @@ class AIAnalysisResult(BaseModel):
     nestjs_blueprint: Optional[NestJSBlueprint] = None
     learning_path: Optional[LearningPath] = None
     cluster_topic_key: Optional[str] = None
+
+    @field_validator("cluster_topic_key", mode="before")
+    @classmethod
+    def sanitize_cluster_slug(cls, v: Any) -> str:
+        if not v or not isinstance(v, str):
+            return "tech-update"
+        slug = re.sub(r"[^a-zA-Z0-9]+", "-", str(v).lower()).strip("-")
+        return slug[:60] if slug else "tech-update"
+
+    @field_validator("target_audience", mode="before")
+    @classmethod
+    def sanitize_personas(cls, v: Any) -> List[str]:
+        if not v:
+            return [EngineeringPersonaEnum.BACKEND_ENGINEER.value]
+        if isinstance(v, str):
+            v = [v]
+        sanitized = []
+        for item in v:
+            if not isinstance(item, str):
+                continue
+            item_str = str(item).strip()
+            # Map loosely matched strings to standard personas
+            lower_item = item_str.lower()
+            if "ai" in lower_item or "ml" in lower_item:
+                sanitized.append(EngineeringPersonaEnum.AI_SYSTEMS_ENGINEER.value)
+            elif "devops" in lower_item or "sre" in lower_item or "cloud" in lower_item:
+                sanitized.append(EngineeringPersonaEnum.DEVOPS_SRE.value)
+            elif "architect" in lower_item:
+                sanitized.append(EngineeringPersonaEnum.SOLUTIONS_ARCHITECT.value)
+            elif "lead" in lower_item or "manager" in lower_item:
+                sanitized.append(EngineeringPersonaEnum.TECH_LEAD.value)
+            elif "full" in lower_item or "frontend" in lower_item:
+                sanitized.append(EngineeringPersonaEnum.FULLSTACK_DEVELOPER.value)
+            elif "security" in lower_item:
+                sanitized.append(EngineeringPersonaEnum.SECURITY_ENGINEER.value)
+            else:
+                sanitized.append(item_str if len(item_str) < 50 else EngineeringPersonaEnum.BACKEND_ENGINEER.value)
+        return list(dict.fromkeys(sanitized)) if sanitized else [EngineeringPersonaEnum.BACKEND_ENGINEER.value]
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def sanitize_tags(cls, v: Any) -> List[str]:
+        if not v:
+            return ["Technology"]
+        if isinstance(v, str):
+            v = [v]
+        cleaned_tags = []
+        for t in v:
+            if not isinstance(t, str):
+                continue
+            cleaned = re.sub(r"[#,\.\s]+", " ", str(t)).strip().capitalize()
+            if cleaned and len(cleaned) < 30:
+                cleaned_tags.append(cleaned)
+        return list(dict.fromkeys(cleaned_tags))[:8] if cleaned_tags else ["Technology"]
+
 
 
 class ArticleChatRequest(BaseModel):
@@ -261,3 +341,15 @@ class AdminMetricsResponse(BaseModel):
     source_health: List[SourceHealthMetric] = []
     ai_model_distribution: Dict[str, int] = {}
     circuit_breakers_status: Dict[str, str] = {}
+
+
+class FastTriageResult(BaseModel):
+    is_relevant_tech: bool
+    is_spam_or_marketing: bool
+    confidence: float
+    suggested_priority: str  # "DISCARD", "STORE_UNANALYZED", "PROCESS_FULL_AI"
+    is_breaking_news: bool = False
+    urgency_level: str = "NORMAL"  # "CRITICAL", "HIGH", "NORMAL"
+    tech_depth_score: float = 5.0
+    reason: Optional[str] = None
+

@@ -15,7 +15,7 @@ async def test_trigger_elite_article_notification():
         url="https://test.com",
     )
     with patch(
-        "app.services.telegram_service.send_telegram_message", new_callable=AsyncMock
+        "app.services.crawl_service.send_telegram_message", new_callable=AsyncMock
     ) as mock_send:
         await trigger_smart_article_notifications(article, cluster_sources=[])
         assert mock_send.called
@@ -36,9 +36,10 @@ async def test_trigger_cluster_breaking_notification():
     )
     sources = ["Tinh Tế", "Tuổi Trẻ", "Dân Trí"]
     with patch(
-        "app.services.telegram_service.send_telegram_message", new_callable=AsyncMock
+        "app.services.crawl_service.send_telegram_message", new_callable=AsyncMock
     ) as mock_send:
         await trigger_smart_article_notifications(article, cluster_sources=sources)
         assert mock_send.called
         args, kwargs = mock_send.call_args
         assert "XU HƯỚNG CÔNG NGHỆ ĐANG NÓNG" in args[0]
+

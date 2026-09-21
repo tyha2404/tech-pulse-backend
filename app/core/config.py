@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     )
     EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
 
+    # TypeSafe AI (Jev) System One Config
+    TYPESAFE_BASE_URL: str = os.getenv("TYPESAFE_BASE_URL", "https://api.typesafe.ai/v1")
+    TYPESAFE_API_KEY: str = os.getenv("TYPESAFE_API_KEY", "")
+
     # Scheduler
     CRAWL_INTERVAL_MINUTES: int = int(os.getenv("CRAWL_INTERVAL_MINUTES", "60"))
 
