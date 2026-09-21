@@ -33,15 +33,27 @@ async def _triage_with_typesafe_jev(title: str, snippet: str, url: str) -> Optio
         "questions": {
             "is_relevant_tech": {
                 "type": "noul",
-                "statement": "This article provides meaningful engineering value for Software/Backend/AI/Cloud/DevOps professionals."
+                "instructions": "Does this article provide meaningful engineering value for Software, Backend, AI, Cloud, or DevOps professionals?",
+                "criteria": {
+                    "true": "Deep technical content, architecture analysis, software release, engineering best practice, or developer tooling.",
+                    "false": "Consumer gadget news, shopping discount, generic life blog, or irrelevant non-technical content."
+                }
             },
             "is_spam_or_marketing": {
                 "type": "noul",
-                "statement": "This article is pure consumer gadget marketing, discount codes, affiliate spam, or superficial PR without tech depth."
+                "instructions": "Is this article purely consumer gadget marketing, discount codes, affiliate spam, or superficial PR without tech depth?",
+                "criteria": {
+                    "true": "Affiliate promotion, product discount deals, consumer gadget review, or pure PR puff piece.",
+                    "false": "Genuine technical article, software announcement, engineering tutorial, or industry analysis."
+                }
             },
             "is_breaking_news": {
                 "type": "noul",
-                "statement": "This article represents an urgent breaking technical event, critical zero-day security vulnerability, or major flagship AI model release (e.g. GPT-5, Claude 4, DeepSeek-v3)."
+                "instructions": "Does this article represent an urgent breaking technical event, critical zero-day security vulnerability, or major flagship AI model release?",
+                "criteria": {
+                    "true": "Critical breaking CVE vulnerability, major flagship model release (e.g., GPT-5, Claude 4), or massive infrastructure outage.",
+                    "false": "Standard technical tutorial, normal blog post, routine release, or non-urgent technical discussion."
+                }
             },
             "urgency_level": {
                 "type": "choice",
@@ -63,14 +75,14 @@ async def _triage_with_typesafe_jev(title: str, snippet: str, url: str) -> Optio
             },
             "tech_depth_score": {
                 "type": "score",
-                "instructions": "Evaluate the technical depth and usefulness of this content for senior engineers.",
-                "scale": {
-                    "1.0": "Shallow clickbait or fluff",
-                    "3.0": "Basic high-level news announcement",
-                    "5.0": "Moderate engineering overview",
-                    "8.0": "High-value in-depth architecture or code breakdown",
-                    "10.0": "Seminal breakthrough or comprehensive production guide"
-                }
+                "instructions": "How deep and practically useful is the engineering content in this article for senior backend and AI engineers?",
+                "criteria": [
+                    "Shallow clickbait, generic tech news, or non-technical product promotion",
+                    "High-level software news announcement or basic conceptual overview",
+                    "Moderate engineering overview with general architecture insights",
+                    "High-value in-depth technical analysis, system design breakdown, or production code lessons",
+                    "Seminal breakthrough, production postmortem, or comprehensive engineering guide"
+                ]
             }
         }
     }
