@@ -33,27 +33,15 @@ async def _triage_with_typesafe_jev(title: str, snippet: str, url: str) -> Optio
         "questions": {
             "is_relevant_tech": {
                 "type": "noul",
-                "instructions": "Does this article provide meaningful engineering value for Software, Backend, AI, Cloud, or DevOps professionals?",
-                "criteria": {
-                    "true": "Deep technical content, architecture analysis, software release, engineering best practice, or developer tooling.",
-                    "false": "Consumer gadget news, shopping discount, generic life blog, or irrelevant non-technical content."
-                }
+                "instructions": "Does this article provide meaningful engineering value for Software, Backend, AI, Cloud, or DevOps professionals?"
             },
             "is_spam_or_marketing": {
                 "type": "noul",
-                "instructions": "Is this article purely consumer gadget marketing, discount codes, affiliate spam, or superficial PR without tech depth?",
-                "criteria": {
-                    "true": "Affiliate promotion, product discount deals, consumer gadget review, or pure PR puff piece.",
-                    "false": "Genuine technical article, software announcement, engineering tutorial, or industry analysis."
-                }
+                "instructions": "Is this article purely consumer gadget marketing, discount codes, affiliate spam, or superficial PR without tech depth?"
             },
             "is_breaking_news": {
                 "type": "noul",
-                "instructions": "Does this article represent an urgent breaking technical event, critical zero-day security vulnerability, or major flagship AI model release?",
-                "criteria": {
-                    "true": "Critical breaking CVE vulnerability, major flagship model release (e.g., GPT-5, Claude 4), or massive infrastructure outage.",
-                    "false": "Standard technical tutorial, normal blog post, routine release, or non-urgent technical discussion."
-                }
+                "instructions": "Does this article represent an urgent breaking technical event, critical zero-day security vulnerability, or major flagship AI model release?"
             },
             "urgency_level": {
                 "type": "choice",
@@ -94,10 +82,13 @@ async def _triage_with_typesafe_jev(title: str, snippet: str, url: str) -> Optio
             answers = data.get("answers", {})
 
             # Parse Typed Primitives
-            # 1. Noul: returns float probability (0.0 to 1.0)
-            p_tech = answers.get("is_relevant_tech", {}).get("probability", 1.0) if isinstance(answers.get("is_relevant_tech"), dict) else float(answers.get("is_relevant_tech", 1.0))
-            p_spam = answers.get("is_spam_or_marketing", {}).get("probability", 0.0) if isinstance(answers.get("is_spam_or_marketing"), dict) else float(answers.get("is_spam_or_marketing", 0.0))
-            p_breaking = answers.get("is_breaking_news", {}).get("probability", 0.0) if isinstance(answers.get("is_breaking_news"), dict) else float(answers.get("is_breaking_news", 0.0))
+            # 1. Noul: returns float in "noul" field (not "probability")
+            p_tech_raw = answers.get("is_relevant_tech", {})
+            p_tech = float(p_tech_raw.get("noul", 1.0)) if isinstance(p_tech_raw, dict) else float(p_tech_raw or 1.0)
+            p_spam_raw = answers.get("is_spam_or_marketing", {})
+            p_spam = float(p_spam_raw.get("noul", 0.0)) if isinstance(p_spam_raw, dict) else float(p_spam_raw or 0.0)
+            p_breaking_raw = answers.get("is_breaking_news", {})
+            p_breaking = float(p_breaking_raw.get("noul", 0.0)) if isinstance(p_breaking_raw, dict) else float(p_breaking_raw or 0.0)
 
             # 2. Choice: returns selected option + calibrated confidence
             choice_obj = answers.get("suggested_priority", {})
@@ -107,9 +98,9 @@ async def _triage_with_typesafe_jev(title: str, snippet: str, url: str) -> Optio
             urgency_obj = answers.get("urgency_level", {})
             urgency = urgency_obj.get("choice", "NORMAL") if isinstance(urgency_obj, dict) else str(urgency_obj)
 
-            # 3. Score: returns float score
+            # 3. Score: returns float score (0-4 mapped to 1-10 legend)
             score_obj = answers.get("tech_depth_score", {})
-            depth_score = score_obj.get("score", 5.0) if isinstance(score_obj, dict) else float(score_obj or 5.0)
+            depth_score = score_obj.get("score", 2.0) if isinstance(score_obj, dict) else float(score_obj or 2.0)
 
             return FastTriageResult(
                 is_relevant_tech=(p_tech >= 0.50),
