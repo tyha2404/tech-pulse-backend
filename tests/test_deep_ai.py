@@ -94,7 +94,7 @@ async def test_ai_analyzer_deep_fields_parsing():
         mock_client.chat.completions.create.return_value = mock_resp
         mock_openai_cls.return_value = mock_client
 
-        res = await analyze_article_with_9router(
+        res, model_used = await analyze_article_with_9router(
             "Tối ưu hóa NestJS Microservices",
             "Nội dung bài viết",
             "https://blog.tech/nestjs-pgvector",

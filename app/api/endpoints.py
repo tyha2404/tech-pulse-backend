@@ -412,7 +412,7 @@ async def summarize_article_on_demand(
             content_to_analyze = fresh_clean
             article.raw_content = fresh_clean
 
-    analysis = await analyze_article_with_9router(
+    analysis, model_used = await analyze_article_with_9router(
         article.title, content_to_analyze, article.url
     )
 
@@ -431,7 +431,7 @@ async def summarize_article_on_demand(
         article.nestjs_blueprint = analysis.nestjs_blueprint.model_dump()
     if analysis.learning_path:
         article.learning_path = analysis.learning_path.model_dump()
-    article.ai_model_used = settings.AI_MODEL
+    article.ai_model_used = model_used
 
     await db.commit()
     await db.refresh(article)

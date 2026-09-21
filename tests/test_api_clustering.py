@@ -15,7 +15,7 @@ async def test_get_articles_group_duplicates():
     rand_id = str(uuid.uuid4())[:8]
     import datetime
 
-    now = datetime.datetime.utcnow()
+    now = datetime.datetime.now(datetime.timezone.utc)
     async with AsyncSessionLocal() as db:
         # Create test source
         src = Source(

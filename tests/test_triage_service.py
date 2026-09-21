@@ -7,15 +7,22 @@ from app.schemas.schemas import FastTriageResult
 @pytest.mark.asyncio
 async def test_fast_triage_tech_article_escalates_to_full_ai():
     """High value tech articles should be routed to full AI"""
-    title = "DeepSeek Releases v3 Architecture with Multi-Head Latent Attention"
-    snippet = "A deep technical breakdown of MLA and FP8 mixed precision training on distributed clusters."
-    url = "https://deepseek.ai/blog/v3-architecture"
+    with patch("openai.resources.chat.completions.AsyncCompletions.create", new_callable=AsyncMock) as mock_create:
+        mock_choice = AsyncMock()
+        mock_choice.message.content = '{"is_relevant_tech": true, "is_spam_or_marketing": false, "confidence": 0.92, "suggested_priority": "PROCESS_FULL_AI", "is_breaking_news": false, "urgency_level": "NORMAL", "tech_depth_score": 8.5, "reason": "Deep technical breakdown"}'
+        mock_resp = AsyncMock()
+        mock_resp.choices = [mock_choice]
+        mock_create.return_value = mock_resp
 
-    res, model_used = await fast_triage_article(title=title, snippet=snippet, url=url)
-    assert isinstance(res, FastTriageResult)
-    assert res.is_relevant_tech is True
-    assert res.suggested_priority in ["PROCESS_FULL_AI", "STORE_UNANALYZED"]
-    assert model_used in ["typesafe-jev", "fast-llm-classifier"]
+        title = "DeepSeek Releases v3 Architecture with Multi-Head Latent Attention"
+        snippet = "A deep technical breakdown of MLA and FP8 mixed precision training on distributed clusters."
+        url = "https://deepseek.ai/blog/v3-architecture"
+
+        res, model_used = await fast_triage_article(title=title, snippet=snippet, url=url)
+        assert isinstance(res, FastTriageResult)
+        assert res.is_relevant_tech is True
+        assert res.suggested_priority in ["PROCESS_FULL_AI", "STORE_UNANALYZED"]
+        assert model_used in ["typesafe-jev", "fast-llm-classifier"]
 
 
 @pytest.mark.asyncio

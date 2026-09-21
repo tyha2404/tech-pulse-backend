@@ -1,4 +1,4 @@
-from pydantic import BaseModel, HttpUrl
+from pydantic import BaseModel, HttpUrl, ConfigDict
 from typing import List, Optional, Any, Dict
 from datetime import datetime
 
@@ -25,8 +25,7 @@ class SourceResponse(SourceBase):
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class CrawlRunResponse(BaseModel):
@@ -42,8 +41,7 @@ class CrawlRunResponse(BaseModel):
     error_message: Optional[str] = None
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class TechStackItem(BaseModel):
@@ -85,8 +83,7 @@ class RelatedSourceArticle(BaseModel):
     published_at: Optional[datetime] = None
     vietnamese_title: Optional[str] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ArticleResponse(BaseModel):
@@ -122,8 +119,7 @@ class ArticleResponse(BaseModel):
     related_articles: List[RelatedSourceArticle] = []
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 from enum import Enum
@@ -286,8 +282,7 @@ class ArticleFeedbackResponse(BaseModel):
     notes: Optional[str] = None
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # User Preference Schemas
@@ -303,8 +298,7 @@ class UserPreferenceResponse(BaseModel):
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # Semantic Search Schemas

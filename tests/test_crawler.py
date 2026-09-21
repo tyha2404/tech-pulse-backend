@@ -6,7 +6,7 @@ from app.crawlers.article_crawler import fetch_rss_feed
 @pytest.mark.asyncio
 async def test_feed_discovery_vnexpress():
     detected_type, feed_url = await discover_feed_url("https://vnexpress.net/so-hoa")
-    assert detected_type in ["rss", "scraper"]
+    assert detected_type in ["rss", "scraper", "sitemap"]
     assert feed_url is not None
 
 

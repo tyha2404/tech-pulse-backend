@@ -14,7 +14,7 @@ async def test_dispatch_daily_espresso_digest():
     import uuid
 
     rand = str(uuid.uuid4())[:8]
-    now = datetime.datetime.utcnow()
+    now = datetime.datetime.now(datetime.timezone.utc)
     async with AsyncSessionLocal() as db:
         src = Source(name=f"Digest Source {rand}", url=f"https://digest-{rand}.com/rss")
         db.add(src)

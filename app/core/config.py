@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 from dotenv import load_dotenv
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Absolute path to backend directory and .env file
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -60,9 +60,10 @@ class Settings(BaseSettings):
     def DATABASE_URL(self) -> str:
         return f"postgresql+asyncpg://{self.DB_USER}:{self.DB_PASS}@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
 
-    class Config:
-        env_file = str(ENV_PATH)
-        extra = "ignore"
+    model_config = SettingsConfigDict(
+        env_file=str(ENV_PATH),
+        extra="ignore"
+    )
 
 
 settings = Settings()

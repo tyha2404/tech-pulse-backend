@@ -71,7 +71,8 @@ async def test_summarize_article_on_demand():
     )
 
     with patch(
-        "app.api.endpoints.analyze_article_with_9router", return_value=mock_analysis
+        "app.api.endpoints.analyze_article_with_9router",
+        return_value=(mock_analysis, "gemini-2.5-flash"),
     ):
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as ac:

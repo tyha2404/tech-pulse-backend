@@ -26,14 +26,19 @@ async def _triage_with_typesafe_jev(title: str, snippet: str, url: str) -> Optio
         "Content-Type": "application/json"
     }
 
-    # Official TypeSafe System One schema format
+    # Official TypeSafe System One schema format with structured state
     payload = {
         "model": "jev-latest",
-        "state": f"Title: {title}\nURL: {url}\nContent Snippet: {snippet[:600]}",
+        "state": {
+            "title": title,
+            "url": url,
+            "snippet": snippet[:600],
+            "source_domain": url.split("/")[2] if "//" in url else ""
+        },
         "questions": {
             "is_relevant_tech": {
                 "type": "noul",
-                "instructions": "Does this article provide meaningful engineering value for Software, Backend, AI, Cloud, or DevOps professionals?"
+                "instructions": "Does this article (referencing `title` and `snippet`) provide meaningful engineering value for Software, Backend, AI, Cloud, or DevOps professionals?"
             },
             "is_spam_or_marketing": {
                 "type": "noul",

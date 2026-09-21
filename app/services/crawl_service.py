@@ -18,7 +18,7 @@ from app.crawlers.article_crawler import (
     make_tz_aware,
 )
 from app.services.ai_analyzer import analyze_article_with_9router
-from app.services.clustering_service import assign_article_cluster
+from app.services.clustering_service import assign_article_cluster, assign_article_cluster_async
 from app.services.embedding_service import generate_article_embedding
 from app.services.triage_service import fast_triage_article
 from app.services.telegram_service import (
@@ -172,7 +172,7 @@ async def crawl_single_source(
             )
             recent_candidates = recent_res.scalars().all()
 
-            cluster_id, is_canonical, demoted_id = assign_article_cluster(
+            cluster_id, is_canonical, demoted_id = await assign_article_cluster_async(
                 article, recent_candidates
             )
             article.cluster_id = cluster_id
