@@ -37,6 +37,7 @@ from app.services.ai_analyzer import (
     chat_with_article,
     generate_weekly_radar_digest,
 )
+from app.services.circuit_breaker import ai_circuit_breaker
 from app.core.config import settings
 
 router = APIRouter()
