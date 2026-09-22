@@ -169,10 +169,15 @@ def assign_article_cluster(
     return str(uuid.uuid4()), True, None
 
 
-async def verify_same_story_with_typesafe(title_a: str, title_b: str) -> Optional[bool]:
+async def verify_same_story_with_typesafe(
+    title_a: str,
+    title_b: str,
+    snippet_a: str = "",
+    snippet_b: str = "",
+) -> Optional[bool]:
     """
     Calls TypeSafe Jev System One with a Noul primitive to resolve borderline
-    similarity between two news headlines (0.40 <= sim <= 0.65).
+    similarity between two news headlines/articles (0.35 <= sim <= 0.65).
     """
     if not settings.TYPESAFE_API_KEY:
         return None
@@ -185,24 +190,30 @@ async def verify_same_story_with_typesafe(title_a: str, title_b: str) -> Optiona
     payload = {
         "model": "jev-latest",
         "state": {
-            "headline_a": title_a,
-            "headline_b": title_b,
+            "article_a": {
+                "title": title_a,
+                "summary": snippet_a[:300] if snippet_a else "",
+            },
+            "article_b": {
+                "title": title_b,
+                "summary": snippet_b[:300] if snippet_b else "",
+            },
         },
         "questions": {
             "is_same_story": {
                 "type": "noul",
-                "instructions": "Do `headline_a` and `headline_b` report on the exact same underlying software engineering release, incident, or technical news event?",
+                "instructions": "Do `article_a` and `article_b` describe the exact same underlying software engineering release, incident, or technical news event?",
             }
         },
     }
     try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
+        async with httpx.AsyncClient(timeout=3.5) as client:
             resp = await client.post(endpoint, json=payload, headers=headers)
             if resp.status_code == 200:
                 data = resp.json()
                 raw_ans = data.get("answers", {}).get("is_same_story", {})
                 p_same = float(raw_ans.get("noul", 0.0)) if isinstance(raw_ans, dict) else float(raw_ans or 0.0)
-                return p_same >= 0.65
+                return p_same >= 0.60
     except Exception as err:
         print(f"[TypeSafe Clustering Resolver Notice] {err}")
     return None
@@ -222,6 +233,11 @@ async def assign_article_cluster_async(
     best_similarity = 0.0
 
     new_title = new_article.vietnamese_title or new_article.title
+    new_snippet = (
+        getattr(new_article, "vietnamese_summary", None)
+        or getattr(new_article, "content", "")
+        or ""
+    )
     new_topic_key = getattr(new_article, "cluster_topic_key", None)
     new_score = getattr(new_article, "relevance_score", 0.0) or 0.0
 
@@ -248,13 +264,20 @@ async def assign_article_cluster_async(
             best_similarity = sim
             best_match = candidate
         elif 0.35 <= sim < similarity_threshold:
-            borderline_candidates.append((sim, candidate, cand_title))
+            cand_snippet = (
+                getattr(candidate, "vietnamese_summary", None)
+                or getattr(candidate, "content", "")
+                or ""
+            )
+            borderline_candidates.append((sim, candidate, cand_title, cand_snippet))
 
     # If no definite heuristic match, check top borderline candidate with TypeSafe Jev
     if not best_match and borderline_candidates and settings.TYPESAFE_API_KEY:
         borderline_candidates.sort(key=lambda x: x[0], reverse=True)
-        _, top_cand, cand_title = borderline_candidates[0]
-        confirmed = await verify_same_story_with_typesafe(new_title, cand_title)
+        _, top_cand, cand_title, cand_snippet = borderline_candidates[0]
+        confirmed = await verify_same_story_with_typesafe(
+            new_title, cand_title, snippet_a=new_snippet, snippet_b=cand_snippet
+        )
         if confirmed:
             best_match = top_cand
 

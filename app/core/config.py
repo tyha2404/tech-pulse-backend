@@ -53,6 +53,13 @@ class Settings(BaseSettings):
     DISCORD_WEBHOOK_URL: str = os.getenv("DISCORD_WEBHOOK_URL", "")
     FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://127.0.0.1:5174")
 
+    FAST_TASK_MODELS: str = os.getenv(
+        "FAST_TASK_MODELS", "groq/openai/gpt-oss-120b,openrouter/openrouter/free"
+    )
+    DEEP_TASK_MODELS: str = os.getenv(
+        "DEEP_TASK_MODELS", "nexo-chat,groq/openai/gpt-oss-120b,gemini/gemini-3.8-flash"
+    )
+
     @property
     def fallback_models_list(self) -> list[str]:
         models = [self.AI_MODEL]
@@ -61,6 +68,34 @@ class Settings(BaseSettings):
                 m_str = m.strip()
                 if m_str and m_str not in models:
                     models.append(m_str)
+        return models
+
+    @property
+    def fast_models_list(self) -> list[str]:
+        models = []
+        if self.FAST_TASK_MODELS:
+            for m in self.FAST_TASK_MODELS.split(","):
+                m_str = m.strip()
+                if m_str and m_str not in models:
+                    models.append(m_str)
+        # Ensure fallback coverage
+        for m in self.fallback_models_list:
+            if m not in models:
+                models.append(m)
+        return models
+
+    @property
+    def deep_models_list(self) -> list[str]:
+        models = []
+        if self.DEEP_TASK_MODELS:
+            for m in self.DEEP_TASK_MODELS.split(","):
+                m_str = m.strip()
+                if m_str and m_str not in models:
+                    models.append(m_str)
+        # Ensure fallback coverage
+        for m in self.fallback_models_list:
+            if m not in models:
+                models.append(m)
         return models
 
     @property

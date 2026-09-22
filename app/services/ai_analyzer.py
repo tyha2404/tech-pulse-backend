@@ -3,7 +3,7 @@ import re
 from typing import Tuple, List, Optional
 from openai import AsyncOpenAI
 from app.core.config import settings
-from app.schemas.schemas import AIAnalysisResult
+from app.schemas.schemas import AIAnalysisResult, FastTriageResult
 from app.services.circuit_breaker import ai_circuit_breaker
 
 
@@ -90,6 +90,45 @@ Return ONLY a valid JSON object matching this schema (do not wrap in markdown or
 }
 """
 
+FAST_SYSTEM_PROMPT = """You are a Fast Technical News & Architecture Intelligence Analyst.
+Your task is to analyze the provided tech news/release and output a high-impact, accurate Vietnamese summary and key takeaways for engineers.
+
+Evaluation & Scoring Criteria:
+1. `relevance_score` (float between 1.0 and 10.0): Overall engineering relevance.
+2. `is_worth_reading` (boolean): true if `relevance_score` >= 7.0, otherwise false.
+3. `vietnamese_title`: A concise, engaging, professional Vietnamese title (100% natural Vietnamese). STRICTLY NO Chinese characters (no Hanzi/Kanji).
+4. `vietnamese_summary`: A clear, comprehensive technical synthesis article (2-3 structured paragraphs, 5-8 sentences, ~150-250 words) in 100% natural, fluent Vietnamese.
+   - Summarize the news event, the underlying tech update, key features/changes, and practical takeaways.
+   - Preserve standard international technical terms (e.g. latency, throughput, vacuum, API, SDK, cache).
+   - STRICTLY FORBIDDEN to include Chinese or Japanese characters.
+5. `key_takeaways`: 2-4 practical bullet points in 100% natural Vietnamese.
+6. `new_tech_stack`: List of technologies, tools, or frameworks introduced, each with a brief description (in Vietnamese).
+7. `tags`: Domain tags (e.g. ["AI/LLM", "Cloud", "Database", "DevOps"]).
+8. `target_audience`: Target engineering personas (e.g. ["Backend Developer", "DevOps Engineer"]).
+9. `cluster_topic_key`: Short kebab-case slug for topic clustering.
+
+CRITICAL LANGUAGE REQUIREMENT:
+All explanation and textual values intended for users (`vietnamese_title`, `vietnamese_summary`, `key_takeaways`) MUST be written in 100% natural, fluent Vietnamese.
+Preserve standard international engineering terms in English.
+STRICTLY FORBIDDEN to output Chinese or Japanese characters in any field.
+
+Return ONLY a valid JSON object matching this schema (do not wrap in markdown or extra commentary):
+{
+  "relevance_score": 6.5,
+  "is_worth_reading": false,
+  "target_audience": ["Software Engineer"],
+  "vietnamese_title": "...",
+  "vietnamese_summary": "...",
+  "cluster_topic_key": "slug-kebab-case",
+  "key_takeaways": ["...", "..."],
+  "new_tech_stack": [{"name": "...", "category": "...", "desc": "..."}],
+  "tags": ["..."],
+  "architectural_tradeoffs": null,
+  "nestjs_blueprint": null,
+  "learning_path": null
+}
+"""
+
 
 def _clean_json_response(raw_text: str) -> dict:
     """Extract and robustly clean JSON dictionary from LLM completion text"""
@@ -170,16 +209,26 @@ def sanitize_and_validate_analysis(raw_data: dict, fallback_title: str, fallback
     return AIAnalysisResult(**raw_data)
 
 
-def _build_calibrated_system_prompt(few_shot_examples: Optional[List[dict]] = None) -> str:
-    """Inject dynamically learned feedback examples into System Prompt (Module 6)"""
+def _build_calibrated_system_prompt(
+    few_shot_examples: Optional[List[dict]] = None,
+    triage_info: Optional[FastTriageResult] = None,
+) -> Tuple[str, bool]:
+    """Inject dynamically learned feedback examples and select prompt mode based on System-1 Triage."""
+    # Determine mode: Deep Engineering (>= 6.0 or default) vs Fast Intelligence (< 6.0)
+    deep_mode = True
+    if triage_info is not None and triage_info.tech_depth_score < 6.0:
+        deep_mode = False
+
+    base_prompt = BASE_SYSTEM_PROMPT if deep_mode else FAST_SYSTEM_PROMPT
+
     if not few_shot_examples:
-        return BASE_SYSTEM_PROMPT
+        return base_prompt, deep_mode
 
     examples_text = "\n\nUser Scoring Calibration Examples (Learn from past feedback):\n"
     for ex in few_shot_examples[:3]:
         examples_text += f"- Title: {ex.get('title')}\n  User Preference: {'HIGH VALUE (Thumbs Up)' if ex.get('type') == 'like' else 'LOW RELEVANCE (Thumbs Down)'}\n  Note: {ex.get('note', '')}\n"
 
-    return BASE_SYSTEM_PROMPT + examples_text
+    return base_prompt + examples_text, deep_mode
 
 
 def extractive_heuristic_fallback(title: str, content: str, url: str) -> AIAnalysisResult:
@@ -219,11 +268,16 @@ def extractive_heuristic_fallback(title: str, content: str, url: str) -> AIAnaly
 
 
 async def analyze_article_with_9router(
-    title: str, content: str, url: str, few_shot_examples: Optional[List[dict]] = None
+    title: str,
+    content: str,
+    url: str,
+    few_shot_examples: Optional[List[dict]] = None,
+    triage_info: Optional[FastTriageResult] = None,
 ) -> Tuple[AIAnalysisResult, str]:
     """
-    Multi-model AI analysis with Circuit Breaker and Failover Chain:
-    Gemini 2.5 Flash -> Claude 3.5 Haiku -> GPT-4o-mini -> Extractive Fallback
+    Multi-model AI analysis with System-1 Dynamic Steering, Circuit Breaker, and Tiered Failover Chain:
+    - Deep Mode (tech_depth_score >= 6.0): full architecture synthesis, tradeoffs, and NestJS blueprint.
+    - Fast Mode (tech_depth_score < 6.0): high-impact intelligence summary and key takeaways.
     """
     client = AsyncOpenAI(
         base_url=settings.NINEROUTERS_BASE_URL,
@@ -232,16 +286,35 @@ async def analyze_article_with_9router(
     )
 
     truncated_content = content[:3000] if content else title
-    system_prompt = _build_calibrated_system_prompt(few_shot_examples)
+    system_prompt, deep_mode = _build_calibrated_system_prompt(
+        few_shot_examples=few_shot_examples, triage_info=triage_info
+    )
+
+    triage_context = ""
+    if triage_info:
+        triage_context = f"""
+SYSTEM-1 TRIAGE SIGNALS:
+- Assessed Tech Depth Score: {triage_info.tech_depth_score:.1f}/10.0
+- Urgency Level: {triage_info.urgency_level}
+- Breaking News Flag: {triage_info.is_breaking_news}
+- Suggested Priority: {triage_info.suggested_priority}
+"""
+
     user_prompt = f"""ARTICLE TITLE: {title}
 SOURCE URL: {url}
+{triage_context}
 ARTICLE CONTENT:
 {truncated_content}
 
 Analyze the article according to your system instructions. Output ONLY the required JSON object.
 """
 
-    models_to_try = [settings.AI_MODEL]
+    # Tiered model selection based on task mode
+    if deep_mode:
+        models_to_try = list(settings.deep_models_list)
+    else:
+        models_to_try = list(settings.fast_models_list)
+
     for m in settings.fallback_models_list:
         if m not in models_to_try:
             models_to_try.append(m)

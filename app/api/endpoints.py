@@ -303,6 +303,50 @@ async def list_articles(
     return output
 
 
+@router.get("/articles/feed/personalized", response_model=List[ArticleResponse])
+async def get_personalized_feed(
+    persona: str = Query(
+        "Backend NestJS Engineer",
+        description="Target Engineering Persona: 'Backend NestJS Engineer', 'AI Systems Engineer', 'DevOps Cloud Architect'...",
+    ),
+    limit: int = 20,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Personalized news feed reranked for a specific engineer persona using
+    TypeSafe AI Jev System One Score primitives.
+    """
+    from app.services.rerank_service import rerank_articles_for_persona
+
+    stmt = (
+        select(Article)
+        .options(selectinload(Article.source))
+        .where(Article.is_hidden == False)
+        .where((Article.is_canonical == True) | (Article.cluster_id.is_(None)))
+        .order_by(Article.published_at.desc().nulls_last(), Article.id.desc())
+        .limit(max(limit * 2, 30))
+    )
+    res = await db.execute(stmt)
+    candidate_articles = res.scalars().all()
+
+    if not candidate_articles:
+        return []
+
+    scored_articles = await rerank_articles_for_persona(candidate_articles, persona=persona)
+
+    output = []
+    for art, p_score in scored_articles[:limit]:
+        resp = ArticleResponse.model_validate(art)
+        resp.relevance_score = p_score
+        if art.source:
+            resp.source_name = art.source.name
+        content_for_estimate = art.raw_content or art.vietnamese_summary or art.title
+        resp.reading_time_minutes = calculate_reading_time(content_for_estimate)
+        output.append(resp)
+
+    return output
+
+
 @router.patch("/articles/{article_id}", response_model=ArticleResponse)
 async def update_article(
     article_id: int,

@@ -123,10 +123,13 @@ async def crawl_single_source(
                 print(f"[Triage DISCARD] '{article.title[:50]}' via {triage_model} (confidence: {triage_res.confidence})")
                 continue
 
-            # Full AI analysis with 9routers (multi-model fallback)
+            # Full AI analysis with 9routers (multi-model fallback with dynamic steering)
             if run_ai:
                 analysis, model_used = await analyze_article_with_9router(
-                    title=article.title, content=full_content, url=article.url
+                    title=article.title,
+                    content=full_content,
+                    url=article.url,
+                    triage_info=triage_res,
                 )
                 article.is_processed = True
                 article.is_worth_reading = analysis.is_worth_reading
