@@ -17,7 +17,7 @@ from app.crawlers.article_crawler import (
     extract_clean_article_content,
     make_tz_aware,
 )
-from app.services.ai_analyzer import analyze_article_with_9router
+from app.services.ai_analyzer import analyze_article_with_9router, make_vietnamese_title
 from app.services.clustering_service import assign_article_cluster, assign_article_cluster_async
 from app.services.embedding_service import generate_article_embedding
 from app.services.triage_service import fast_triage_article
@@ -129,8 +129,8 @@ async def crawl_single_source(
                     article.is_processed = True
                     article.is_worth_reading = False
                     article.relevance_score = 4.0
-                    article.vietnamese_title = article.title
-                    article.vietnamese_summary = full_content[:200]
+                    article.vietnamese_title = make_vietnamese_title(article.title)
+                    article.vietnamese_summary = "Tin được tổng hợp tự động từ nguồn."
                     article.ai_model_used = f"{triage_model}-light"
                 else:
                     analysis, model_used = await analyze_article_with_9router(

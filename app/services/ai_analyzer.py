@@ -6,6 +6,19 @@ from app.core.config import settings
 from app.schemas.schemas import AIAnalysisResult
 from app.services.circuit_breaker import ai_circuit_breaker
 
+
+def has_vietnamese_diacritics(text: str) -> bool:
+    """Check if text contains Vietnamese diacritic characters."""
+    vietnamese_chars = set("áààảãạăắằẳẵặâấầẩẫậéèèẻẽẹêễếềểễệíìỉĩịóòòỏõọôốồổỗộơờởợỡỡúùủũụưứừửữựýỳỷỹỵÁÀẢÃẠĂẮẰẲẴẶÂẤẦẨẪẬÉÈẺẼẸÊỄẾỀỂỄỆÍÌỈĨỊÓÒỎÕỌÔỐỒỔỖỘƠỜỞỢỠỠÚÙỦŨỤƯỨỪỬỮỰÝỲỶỸỴ")
+    return any(c in vietnamese_chars for c in text)
+
+
+def make_vietnamese_title(title: str) -> str:
+    """Ensure title is in Vietnamese. If English, prepend 'Tin: '."""
+    if has_vietnamese_diacritics(title):
+        return title
+    return f"Tin: {title}"
+
 BASE_SYSTEM_PROMPT = """You are a Principal Backend & AI Systems Engineer, specializing in NestJS, TypeScript, Microservices, Distributed Systems, and AI Infrastructure (LLMs, Vector DBs, RAG, Agentic Workflows).
 Your task is to analyze the provided technical article and output an in-depth, production-oriented evaluation for software engineers.
 
@@ -182,8 +195,8 @@ def extractive_heuristic_fallback(title: str, content: str, url: str) -> AIAnaly
         relevance_score=5.5,
         is_worth_reading=False,
         target_audience=["Software Engineer", "Backend Developer"],
-        vietnamese_title=title,
-        vietnamese_summary=f"Trích xuất tự động: {fallback_summary}...",
+        vietnamese_title=make_vietnamese_title(title),
+        vietnamese_summary=f"Trích xuất tự động: {fallback_summary[:100]}..." if fallback_summary else "Tin được trích xuất tự động.",
         key_takeaways=[
             "Xem bài viết đầy đủ tại đường dẫn nguồn.",
             "Bản trích xuất tự động đảm bảo dữ liệu không bị thất thoát khi đường truyền AI gặp sự cố.",
