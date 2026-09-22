@@ -36,6 +36,7 @@ async def crawl_single_source(
     """Crawls a given source (RSS, JSON Feed, Sitemap, HN) and tracks CrawlRun metrics"""
     start_time = time.time()
     started_at = datetime.now(timezone.utc)
+    source_id = source.id
     source.status = "pending"
     await db.commit()
 
@@ -124,46 +125,37 @@ async def crawl_single_source(
 
             # Full AI analysis with 9routers (multi-model fallback)
             if run_ai:
-                if triage_res.suggested_priority == "STORE_UNANALYZED" and triage_res.confidence >= 0.85:
-                    # Light record without heavy NestJS Blueprint generation
-                    article.is_processed = True
-                    article.is_worth_reading = False
-                    article.relevance_score = 4.0
-                    article.vietnamese_title = make_vietnamese_title(article.title)
-                    article.vietnamese_summary = "Tin được tổng hợp tự động từ nguồn."
-                    article.ai_model_used = f"{triage_model}-light"
-                else:
-                    analysis, model_used = await analyze_article_with_9router(
-                        title=article.title, content=full_content, url=article.url
-                    )
-                    article.is_processed = True
-                    article.is_worth_reading = analysis.is_worth_reading
-                    article.relevance_score = analysis.relevance_score
-                    article.vietnamese_title = analysis.vietnamese_title
-                    article.vietnamese_summary = analysis.vietnamese_summary
-                    article.key_takeaways = analysis.key_takeaways
-                    article.new_tech_stacks = [
-                        t.model_dump() for t in analysis.new_tech_stack
-                    ]
-                    article.tags = analysis.tags
-                    article.target_audience = analysis.target_audience
-                    article.architectural_tradeoffs = (
-                        analysis.architectural_tradeoffs.model_dump()
-                        if analysis.architectural_tradeoffs
-                        else {}
-                    )
-                    article.nestjs_blueprint = (
-                        analysis.nestjs_blueprint.model_dump()
-                        if analysis.nestjs_blueprint
-                        else {}
-                    )
-                    article.learning_path = (
-                        analysis.learning_path.model_dump()
-                        if analysis.learning_path
-                        else {}
-                    )
-                    article.cluster_topic_key = analysis.cluster_topic_key
-                    article.ai_model_used = model_used
+                analysis, model_used = await analyze_article_with_9router(
+                    title=article.title, content=full_content, url=article.url
+                )
+                article.is_processed = True
+                article.is_worth_reading = analysis.is_worth_reading
+                article.relevance_score = analysis.relevance_score
+                article.vietnamese_title = analysis.vietnamese_title
+                article.vietnamese_summary = analysis.vietnamese_summary
+                article.key_takeaways = analysis.key_takeaways
+                article.new_tech_stacks = [
+                    t.model_dump() for t in analysis.new_tech_stack
+                ]
+                article.tags = analysis.tags
+                article.target_audience = analysis.target_audience
+                article.architectural_tradeoffs = (
+                    analysis.architectural_tradeoffs.model_dump()
+                    if analysis.architectural_tradeoffs
+                    else {}
+                )
+                article.nestjs_blueprint = (
+                    analysis.nestjs_blueprint.model_dump()
+                    if analysis.nestjs_blueprint
+                    else {}
+                )
+                article.learning_path = (
+                    analysis.learning_path.model_dump()
+                    if analysis.learning_path
+                    else {}
+                )
+                article.cluster_topic_key = analysis.cluster_topic_key
+                article.ai_model_used = model_used
 
             # Story Clustering & Deduplication within 48h window
             since_time = datetime.now(timezone.utc) - timedelta(hours=48)
@@ -218,15 +210,17 @@ async def crawl_single_source(
                 print(f"Notification error: {noti_err}")
 
         # Update source health status
-        source.status = "healthy"
-        source.last_crawled_at = datetime.now(timezone.utc)
-        source.last_error = None
-        source.articles_count = (source.articles_count or 0) + articles_added
+        current_source = await db.get(Source, source_id)
+        if current_source:
+            current_source.status = "healthy"
+            current_source.last_crawled_at = datetime.now(timezone.utc)
+            current_source.last_error = None
+            current_source.articles_count = (current_source.articles_count or 0) + articles_added
         
         # Record successful CrawlRun
         duration_ms = int((time.time() - start_time) * 1000)
         crawl_run = CrawlRun(
-            source_id=source.id,
+            source_id=source_id,
             started_at=started_at,
             finished_at=datetime.now(timezone.utc),
             duration_ms=duration_ms,
@@ -243,12 +237,14 @@ async def crawl_single_source(
         await db.rollback()
         duration_ms = int((time.time() - start_time) * 1000)
         error_message = str(e)
-        source.status = "error"
-        source.last_error = error_message
+        current_source = await db.get(Source, source_id)
+        if current_source:
+            current_source.status = "error"
+            current_source.last_error = error_message
         
         # Record failed CrawlRun
         crawl_run = CrawlRun(
-            source_id=source.id,
+            source_id=source_id,
             started_at=started_at,
             finished_at=datetime.now(timezone.utc),
             duration_ms=duration_ms,

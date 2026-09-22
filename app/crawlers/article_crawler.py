@@ -15,6 +15,11 @@ def make_tz_aware(dt: datetime | None) -> datetime | None:
     """Ensure datetime is offset-aware UTC for TIMESTAMP WITH TIME ZONE"""
     if dt is None:
         return None
+    if isinstance(dt, str):
+        try:
+            dt = datetime.fromisoformat(dt.replace("Z", "+00:00"))
+        except Exception:
+            return None
     if dt.tzinfo is not None:
         return dt.astimezone(timezone.utc)
     return dt.replace(tzinfo=timezone.utc)

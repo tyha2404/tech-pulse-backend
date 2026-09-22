@@ -59,11 +59,11 @@ async def _triage_with_typesafe_jev(title: str, snippet: str, url: str) -> Optio
             },
             "suggested_priority": {
                 "type": "choice",
-                "instructions": "Determine how the crawler pipeline should route this technical article.",
+                "instructions": "Determine how the crawler pipeline should route this technical article for software engineers.",
                 "criteria": {
-                    "PROCESS_FULL_AI": "Deep technical breakthrough, architecture pattern, backend/AI framework release, system design article.",
-                    "STORE_UNANALYZED": "General software industry news, minor updates, or non-critical tech announcements.",
-                    "DISCARD": "Consumer electronics, shopping deals, pure PR noise, or non-technical content."
+                    "PROCESS_FULL_AI": "Any technical article, software engineering release, architecture pattern, backend/AI framework update, system design, or engineering tutorial to be analyzed and synthesized.",
+                    "STORE_UNANALYZED": "General software industry news or minor software announcements.",
+                    "DISCARD": "Consumer electronics, shopping deals, coupon codes, affiliate marketing, pure PR noise, or non-technical content."
                 }
             },
             "tech_depth_score": {
@@ -153,7 +153,7 @@ Rules:
 - Generic software news with moderate relevance -> "STORE_UNANALYZED"
 """
 
-    for model_name in [settings.AI_MODEL, "gpt-4o-mini", "claude-3-5-haiku"]:
+    for model_name in settings.fallback_models_list:
         try:
             completion = await client.chat.completions.create(
                 model=model_name,

@@ -28,28 +28,36 @@ Evaluation & Scoring Criteria:
    - LOW RELEVANCE (below 5.0): Purely theoretical academic papers full of mathematical proofs without real-world software applicability, shallow marketing/PR noise, sponsored puff pieces, or duplicate fluff.
 2. `is_worth_reading` (boolean): true if `relevance_score` >= 7.0, otherwise false.
 3. `vietnamese_title`: A concise, professional, engaging Vietnamese title (100% natural Vietnamese). STRICTLY NO Chinese characters (no Hanzi/Kanji).
-4. `vietnamese_summary`: 3-5 concise, high-value sentences in 100% natural, fluent Vietnamese summarizing what problem this technology solves and the key implications. STRICTLY FORBIDDEN to include Chinese/Japanese characters.
-5. `key_takeaways`: 3-5 practical, bulleted technical lessons for Backend & AI engineers (in 100% Vietnamese).
-6. `new_tech_stack`: List of new technologies, frameworks, libraries, databases, or architectural patterns introduced, each with a brief description.
+4. `vietnamese_summary`: A comprehensive, in-depth technical synthesis article (2-3 structured paragraphs, 6-10 sentences, ~200-350 words) in 100% natural, fluent Vietnamese crafted specifically for Senior Software & AI Engineers.
+   - MUST provide complete, thorough, and high-density technical information with full context, architectural mechanics, and production metrics. Absolutely avoid shallow or truncated summaries.
+   - In-Depth 3-Part Paragraph Structure:
+     * Paragraph 1 - Context & Core Engineering Problem: Detailed analysis of the technical problem, system bottlenecks, or architectural limitations that this technology or article solves; compare context with traditional approaches.
+     * Paragraph 2 - Deep Architectural Mechanism & Technical Solution: Detailed explanation of internal mechanics, underlying components, algorithms, data flows, and critical benchmark or quantitative metrics (if present).
+     * Paragraph 3 - System Impact, Trade-offs & Production Recommendations: Quantitative evaluation of performance impact (latency, throughput, memory, IOPS), operational trade-offs (costs, complexity, maintenance overhead), and concrete, actionable production recommendations for backend and AI engineers.
+   - Preserve standard international technical terms (e.g., latency, throughput, vacuum, failover, microservices, vector embedding, KV cache, sharding, zero-copy).
+   - STRICTLY FORBIDDEN to include Chinese or Japanese characters.
+5. `key_takeaways`: 3-5 practical, bulleted technical lessons for Backend & AI engineers (in 100% natural Vietnamese).
+6. `new_tech_stack`: List of new technologies, frameworks, libraries, databases, or architectural patterns introduced, each with a brief description (in Vietnamese).
 7. `tags`: List of relevant domain tags (e.g. ["NestJS", "AI/LLM", "PostgreSQL", "pgvector", "System Design", "Microservices", "TypeScript"]).
 8. `target_audience`: Target engineering personas (e.g. ["Backend NestJS Engineer", "AI Systems Engineer", "Tech Lead"]).
 9. `architectural_tradeoffs`:
-   - `pros`: Practical technical advantages.
-   - `cons`: Operational overhead, costs, or complexity.
-   - `when_not_to_use`: Specific anti-patterns or scenarios where adopting this causes over-engineering.
-   - `scalability_bottlenecks`: Performance bottlenecks under high load or massive scale.
+   - `pros`: Practical technical advantages (in 100% natural Vietnamese).
+   - `cons`: Operational overhead, costs, or complexity (in 100% natural Vietnamese).
+   - `when_not_to_use`: Specific anti-patterns or scenarios where adopting this causes over-engineering (in 100% natural Vietnamese).
+   - `scalability_bottlenecks`: Performance bottlenecks under high load or massive scale (in 100% natural Vietnamese).
 10. `nestjs_blueprint`: Production-grade implementation blueprint in the NestJS / Node.js ecosystem:
    - `architectural_pattern`: Recommended pattern (e.g., "Hexagonal / Ports & Adapters", "CQRS with Event Sourcing", "Repository & Service Pattern").
    - `suggested_module_structure`: Recommended NestJS folder & file structure.
    - `code_snippet`: Concrete, clean TypeScript/NestJS production code sample (Module/Service/Guard/Interceptor/Prisma/BullMQ).
    - `database_integration`: Practical DB guidance (e.g., Prisma ORM with pgvector, TypeORM, Redis cache, BullMQ).
 11. `learning_path`:
-   - `prerequisites`: Required foundational knowledge.
-   - `recommended_next_topics`: Advanced topics to explore next.
+   - `prerequisites`: Required foundational knowledge (in Vietnamese).
+   - `recommended_next_topics`: Advanced topics to explore next (in Vietnamese).
 12. `cluster_topic_key`: Short kebab-case slug identifying the core subject/event for topic clustering (e.g., "deepseek-v3-release", "anthropic-claude-3-7", "postgresql-17-performance", "apple-iphone-launch").
 
 CRITICAL LANGUAGE REQUIREMENT:
-All textual values intended for users (`vietnamese_title`, `vietnamese_summary`, `key_takeaways`, `pros`, `cons`, etc.) MUST be written in 100% natural, fluent Vietnamese.
+All explanation and textual values intended for users (`vietnamese_title`, `vietnamese_summary`, `key_takeaways`, `pros`, `cons`, `when_not_to_use`, `scalability_bottlenecks`, `prerequisites`, `recommended_next_topics`) MUST be written in 100% natural, fluent Vietnamese with rich technical depth.
+Preserve standard international engineering terms (e.g. latency, throughput, vacuum, failover, microservices, KV cache, sharding, zero-copy, prompt engineering) in standard English.
 STRICTLY FORBIDDEN to output Chinese or Japanese characters in any field.
 
 Return ONLY a valid JSON object matching this schema (do not wrap in markdown or extra commentary):
@@ -195,7 +203,7 @@ def extractive_heuristic_fallback(title: str, content: str, url: str) -> AIAnaly
         relevance_score=5.5,
         is_worth_reading=False,
         target_audience=["Software Engineer", "Backend Developer"],
-        vietnamese_title=make_vietnamese_title(title),
+        vietnamese_title=title,
         vietnamese_summary=f"Trích xuất tự động: {fallback_summary[:100]}..." if fallback_summary else "Tin được trích xuất tự động.",
         key_takeaways=[
             "Xem bài viết đầy đủ tại đường dẫn nguồn.",
@@ -233,9 +241,10 @@ ARTICLE CONTENT:
 Analyze the article according to your system instructions. Output ONLY the required JSON object.
 """
 
-    models_to_try = settings.fallback_models_list
-    if not models_to_try:
-        models_to_try = [settings.AI_MODEL, "claude-3-5-haiku", "gpt-4o-mini"]
+    models_to_try = [settings.AI_MODEL]
+    for m in settings.fallback_models_list:
+        if m not in models_to_try:
+            models_to_try.append(m)
 
     last_exception = None
 
@@ -253,7 +262,14 @@ Analyze the article according to your system instructions. Output ONLY the requi
                 ],
                 temperature=0.3,
             )
-            raw_answer = response.choices[0].message.content.strip()
+            if not response.choices or not response.choices[0].message:
+                raise ValueError(f"Empty choices in response from {model_name}")
+            raw_answer = (response.choices[0].message.content or "").strip()
+            if not raw_answer and hasattr(response.choices[0].message, "reasoning"):
+                raw_answer = (getattr(response.choices[0].message, "reasoning", "") or "").strip()
+            if not raw_answer:
+                raise ValueError(f"Empty content from {model_name}")
+
             data = _clean_json_response(raw_answer)
             analysis = sanitize_and_validate_analysis(
                 raw_data=data,
@@ -301,12 +317,12 @@ Guidelines:
 1. Answer technical questions directly and practically based on the article's core concepts.
 2. When asked about implementation, provide clean, idiomatic NestJS & TypeScript code blueprints (utilizing Dependency Injection, DTOs, Decorators, Prisma, Redis, BullMQ, or Vercel AI SDK where appropriate).
 3. Always explain architectural trade-offs, performance edge cases, and scalability bottlenecks.
-4. Respond in professional, practical, natural Vietnamese. STRICTLY DO NOT use Chinese characters.
-5. At the end of your response, provide 2-3 follow-up exploration questions in the following exact format:
+4. Respond in professional, practical, natural Vietnamese. STRICTLY DO NOT use Chinese or Japanese characters. Preserve international technical terms in English.
+5. At the end of your response, provide 2-3 follow-up exploration questions in Vietnamese in the following exact format:
 FOLLOW_UPS:
-- Câu hỏi 1...
-- Câu hỏi 2...
-- Câu hỏi 3...
+- [Follow-up question 1 in Vietnamese]
+- [Follow-up question 2 in Vietnamese]
+- [Follow-up question 3 in Vietnamese]
 """
 
     messages = [{"role": "system", "content": system_instruction}]
@@ -332,7 +348,11 @@ FOLLOW_UPS:
                 messages=messages,
                 temperature=0.4,
             )
-            raw_text = response.choices[0].message.content.strip()
+            if not response.choices or not response.choices[0].message:
+                raise ValueError(f"Empty choices from {model_name}")
+            raw_text = (response.choices[0].message.content or "").strip()
+            if not raw_text and hasattr(response.choices[0].message, "reasoning"):
+                raw_text = (getattr(response.choices[0].message, "reasoning", "") or "").strip()
 
             suggested_followups = []
             reply_body = raw_text
@@ -382,7 +402,8 @@ async def generate_weekly_radar_digest(top_articles: list) -> dict:
 Synthesize the provided technical articles into an executive, strategic "Tech Intelligence & Radar Heatmap" report for Backend NestJS & AI Engineers.
 
 CRITICAL LANGUAGE REQUIREMENT:
-All output values must be written in 100% natural, fluent Vietnamese.
+All explanation and textual output values in the JSON (dominant trend summaries, relevance, architectural shifts, actionable recommendations) MUST be written in 100% natural, fluent Vietnamese.
+Preserve standard international technical terms (e.g., latency, throughput, vacuum, failover, microservices, KV cache, sharding, zero-copy) in English.
 STRICTLY FORBIDDEN to include Chinese or Japanese characters in the output.
 
 Return ONLY a valid JSON object matching this schema:
@@ -390,19 +411,19 @@ Return ONLY a valid JSON object matching this schema:
   "week_label": "Báo cáo Radar Công nghệ Tuần này",
   "dominant_trends": [
     {
-      "topic": "Tên chủ đề / Công nghệ",
+      "topic": "Technology / Topic Name",
       "status": "Adopt | Trial | Assess | Hold",
-      "summary": "Tóm tắt ngắn 1-2 câu về đột phá",
-      "relevance": "Ý nghĩa đối với Backend NestJS / Distributed Systems"
+      "summary": "1-2 sentence breakthrough summary in Vietnamese",
+      "relevance": "Architectural significance for Backend & AI Systems in Vietnamese"
     }
   ],
   "architectural_shifts": [
-    "Sự dịch chuyển kiến trúc 1...",
-    "Sự dịch chuyển kiến trúc 2..."
+    "Key architectural shift 1 in Vietnamese...",
+    "Key architectural shift 2 in Vietnamese..."
   ],
   "actionable_recommendations": [
-    "Khuyến nghị hành động thực chiến 1 cho backend team...",
-    "Khuyến nghị hành động thực chiến 2..."
+    "Actionable production recommendation 1 for backend/AI team in Vietnamese...",
+    "Actionable production recommendation 2 for backend/AI team in Vietnamese..."
   ]
 }
 """
@@ -427,7 +448,13 @@ Please generate the weekly tech radar digest JSON following the system instructi
                 ],
                 temperature=0.3,
             )
-            raw_text = response.choices[0].message.content.strip()
+            if not response.choices or not response.choices[0].message:
+                raise ValueError(f"Empty choices from {model_name}")
+            raw_text = (response.choices[0].message.content or "").strip()
+            if not raw_text and hasattr(response.choices[0].message, "reasoning"):
+                raw_text = (getattr(response.choices[0].message, "reasoning", "") or "").strip()
+            if not raw_text:
+                raise ValueError(f"Empty content from {model_name}")
             data = _clean_json_response(raw_text)
             ai_circuit_breaker.record_success(model_name)
             return data

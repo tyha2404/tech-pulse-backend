@@ -29,7 +29,8 @@ class Settings(BaseSettings):
     NINEROUTERS_API_KEY: str = os.getenv("NINEROUTERS_API_KEY", "9router-local")
     AI_MODEL: str = os.getenv("AI_MODEL", "gemini-2.5-flash")
     AI_FALLBACK_MODELS: str = os.getenv(
-        "AI_FALLBACK_MODELS", "gemini-2.5-flash,claude-3-5-haiku,gpt-4o-mini"
+        "AI_FALLBACK_MODELS",
+        "groq/openai/gpt-oss-120b,openrouter/openrouter/free,gemini/gemini-3.8-flash,gemini-2.5-flash,claude-3-5-haiku,gpt-4o-mini",
     )
     EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
 
@@ -54,7 +55,13 @@ class Settings(BaseSettings):
 
     @property
     def fallback_models_list(self) -> list[str]:
-        return [m.strip() for m in self.AI_FALLBACK_MODELS.split(",") if m.strip()]
+        models = [self.AI_MODEL]
+        if self.AI_FALLBACK_MODELS:
+            for m in self.AI_FALLBACK_MODELS.split(","):
+                m_str = m.strip()
+                if m_str and m_str not in models:
+                    models.append(m_str)
+        return models
 
     @property
     def DATABASE_URL(self) -> str:

@@ -88,3 +88,78 @@ async def test_fast_triage_typesafe_jev_mock():
             assert res.confidence == 0.95
             assert res.suggested_priority == "PROCESS_FULL_AI"
             assert "Jev System-1 Primitive" in res.reason
+
+
+@pytest.mark.asyncio
+async def test_crawl_with_jev_triage_performs_full_ai_vietnamese_synthesis():
+    """Verify that articles triaged via Jev are fully synthesized and translated into Vietnamese in DB"""
+    import uuid
+    from app.core.database import AsyncSessionLocal
+    from app.models.models import Source, Article
+    from app.schemas.schemas import AIAnalysisResult
+    from app.services.crawl_service import crawl_single_source
+    from sqlalchemy.future import select
+
+    rand = str(uuid.uuid4())[:8]
+    test_url = f"https://example.com/test-jev-crawl-{rand}"
+
+    mock_analysis = AIAnalysisResult(
+        relevance_score=8.5,
+        is_worth_reading=True,
+        vietnamese_title="Kiến trúc Microservices với PostgreSQL 17 và NestJS",
+        vietnamese_summary="Bài viết phân tích chuyên sâu cách triển khai hệ thống phân tán chịu tải cao sử dụng PostgreSQL 17 và NestJS. Các cải tiến bộ nhớ giúp tối ưu hóa đáng kể độ trễ truy vấn.",
+        key_takeaways=[
+            "Tối ưu hóa quản lý bộ nhớ trong vacuuming",
+            "Cơ chế failover an toàn cho logical replication"
+        ],
+        new_tech_stack=[{"name": "PostgreSQL 17", "category": "Database", "desc": "RDBMS tối ưu bộ nhớ"}],
+        tags=["PostgreSQL", "NestJS", "Microservices"],
+        target_audience=["Backend Engineer"],
+        architectural_tradeoffs=None,
+        nestjs_blueprint=None,
+        learning_path=None,
+        cluster_topic_key=f"postgres-17-{rand}",
+    )
+
+    import datetime
+    mock_raw_items = [{
+        "title": "PostgreSQL 17 Memory Management in Distributed Systems",
+        "url": test_url,
+        "author": "Tech Author",
+        "published_at": datetime.datetime.now(datetime.timezone.utc),
+        "raw_content": "Detailed engineering article about PostgreSQL 17 memory management in distributed clusters."
+    }]
+
+    jev_mock_triage = FastTriageResult(
+        is_relevant_tech=True,
+        is_spam_or_marketing=False,
+        confidence=0.92,
+        suggested_priority="STORE_UNANALYZED",  # Even if triaged with standard priority
+        is_breaking_news=False,
+        urgency_level="NORMAL",
+        tech_depth_score=7.0,
+        reason="Jev System-1 Primitive"
+    )
+
+    async with AsyncSessionLocal() as db:
+        src = Source(name=f"Jev Test Source {rand}", url=f"https://source-{rand}.com", source_type="rss")
+        db.add(src)
+        await db.commit()
+        await db.refresh(src)
+
+        with patch("app.services.crawl_service.fetch_rss_feed", return_value=mock_raw_items), \
+             patch("app.services.crawl_service.fast_triage_article", return_value=(jev_mock_triage, "typesafe-jev")), \
+             patch("app.services.crawl_service.analyze_article_with_9router", return_value=(mock_analysis, "groq/openai/gpt-oss-120b")):
+            added = await crawl_single_source(src, db, run_ai=True)
+            assert added == 1
+
+        # Query the saved article from DB
+        res = await db.execute(select(Article).where(Article.url == test_url))
+        art = res.scalar_one()
+
+        assert art.vietnamese_title == "Kiến trúc Microservices với PostgreSQL 17 và NestJS"
+        assert "Bài viết phân tích chuyên sâu" in art.vietnamese_summary
+        assert art.vietnamese_summary != "Tin được tổng hợp tự động từ nguồn."
+        assert len(art.key_takeaways) == 2
+        assert art.is_processed is True
+
