@@ -105,7 +105,7 @@ async def crawl_single_source(
             if triage_res.is_breaking_news or triage_res.urgency_level == "CRITICAL":
                 try:
                     await send_instant_flash_alert(
-                        title=article.title,
+                        title=make_vietnamese_title(article.title),
                         url=article.url,
                         source_name=source.name,
                         snippet=full_content[:300],
