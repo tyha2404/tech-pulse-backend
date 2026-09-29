@@ -115,12 +115,17 @@ def extractive_heuristic_fallback(title: str, content: str, url: str) -> AIAnaly
 
     slug = re.sub(r"[^a-zA-Z0-9]+", "-", title.lower()).strip("-")[:50] or "tech-update"
 
+    # Clean out any foreign Hanzi/Kanji script from fallback to uphold language invariant
+    clean_summary = re.sub(r"[\u4e00-\u9fff]+", "", fallback_summary).strip()
+    clean_title = re.sub(r"[\u4e00-\u9fff]+", "", title).strip() or "Tin tức công nghệ"
+    summary_text = clean_summary if clean_summary else clean_title
+
     return AIAnalysisResult(
         relevance_score=5.5,
         is_worth_reading=False,
         target_audience=["Software Engineer", "Backend Developer"],
-        vietnamese_title=title,
-        vietnamese_summary=f"Trích xuất tự động: {fallback_summary}...",
+        vietnamese_title=clean_title,
+        vietnamese_summary=f"Trích xuất tự động: {summary_text}...",
         key_takeaways=[
             "Xem bài viết đầy đủ tại đường dẫn nguồn.",
             "Bản trích xuất tự động đảm bảo dữ liệu không bị thất thoát khi đường truyền AI gặp sự cố.",
