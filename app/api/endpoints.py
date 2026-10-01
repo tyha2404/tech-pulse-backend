@@ -71,6 +71,11 @@ async def run_crawl_all_task():
         crawl_status["progress"] = (
             f"Hoàn thành! Đã thu thập {total} bài mới."
         )
+    except asyncio.CancelledError:
+        crawl_status["progress"] = "Tiến trình cào đã bị dừng/huỷ."
+        raise
+    except Exception as e:
+        crawl_status["progress"] = f"Lỗi cào tin: {e}"
     finally:
         crawl_status["is_crawling"] = False
 

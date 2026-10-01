@@ -197,6 +197,12 @@ async def crawl_single_source(
         db.add(crawl_run)
         await db.commit()
 
+    except asyncio.CancelledError:
+        try:
+            await db.rollback()
+        except Exception:
+            pass
+        raise
     except Exception as e:
         await db.rollback()
         duration_ms = int((time.time() - start_time) * 1000)
@@ -302,41 +308,59 @@ async def crawl_all_active_sources(
     sem = asyncio.Semaphore(concurrency_limit)
     total_new_articles = 0
 
-    async with AsyncSessionLocal() as db:
-        res = await db.execute(select(Source).where(Source.is_active == True))
-        sources = res.scalars().all()
-        # Extract source IDs to process independently in concurrent sessions
-        source_ids = [s.id for s in sources]
+    try:
+        async with AsyncSessionLocal() as db:
+            res = await db.execute(select(Source).where(Source.is_active == True))
+            sources = res.scalars().all()
+            # Extract source IDs to process independently in concurrent sessions
+            source_ids = [s.id for s in sources]
+    except asyncio.CancelledError:
+        print("⚠️ [Crawl Service] Cào tin bị huỷ trong lúc lấy danh sách nguồn.")
+        raise
 
     async def crawl_worker(source_id: int) -> int:
         async with sem:
             async with AsyncSessionLocal() as session:
-                source = await session.get(Source, source_id)
-                if not source:
-                    return 0
-                if progress_callback:
-                    try:
-                        if inspect.iscoroutinefunction(progress_callback):
-                            await progress_callback(f"Đang cào nguồn: {source.name}...")
-                        else:
-                            progress_callback(f"Đang cào nguồn: {source.name}...")
-                    except Exception as cb_err:
-                        print(f"Progress callback error: {cb_err}")
-
                 try:
+                    source = await session.get(Source, source_id)
+                    if not source:
+                        return 0
+                    if progress_callback:
+                        try:
+                            if inspect.iscoroutinefunction(progress_callback):
+                                await progress_callback(f"Đang cào nguồn: {source.name}...")
+                            else:
+                                progress_callback(f"Đang cào nguồn: {source.name}...")
+                        except Exception as cb_err:
+                            print(f"Progress callback error: {cb_err}")
+
                     return await crawl_single_source(source, session, run_ai=run_ai)
+                except asyncio.CancelledError:
+                    try:
+                        await session.rollback()
+                    except Exception:
+                        pass
+                    raise
                 except Exception as err:
-                    print(f"Lỗi cào nguồn {source.name} (id={source_id}): {err}")
+                    print(f"Lỗi cào nguồn (id={source_id}): {err}")
                     return 0
 
-    results = await asyncio.gather(
-        *(crawl_worker(s_id) for s_id in source_ids),
-        return_exceptions=True,
-    )
+    tasks = [asyncio.create_task(crawl_worker(s_id)) for s_id in source_ids]
+    try:
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+    except asyncio.CancelledError:
+        print("⚠️ [Crawl Service] Quá trình cào nhận tín hiệu huỷ. Đang dọn dẹp các task con an toàn...")
+        for t in tasks:
+            if not t.done():
+                t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
 
     for r in results:
         if isinstance(r, int):
             total_new_articles += r
+        elif isinstance(r, asyncio.CancelledError):
+            pass
         elif isinstance(r, Exception):
             print(f"Task exception in crawl_all_active_sources: {r}")
 

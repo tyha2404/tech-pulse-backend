@@ -327,6 +327,9 @@ async def scheduled_crawl_job():
     try:
         total = await crawl_all_active_sources(concurrency_limit=5, run_ai=True)
         print(f"⏰ [Scheduler] Hoàn tất chu kỳ cào: đã thu thập {total} bài mới.")
+    except asyncio.CancelledError:
+        print("⏰ [Scheduler] Scheduled crawl job đã được huỷ an toàn (CancelledError caught).")
+        return
     except Exception as e:
         print(f"⏰ [Scheduler] Error during scheduled crawl: {e}")
 
@@ -482,10 +485,20 @@ async def lifespan(app: FastAPI):
     from app.services.telegram_service import dispatch_daily_espresso_digest
 
     async def morning_espresso_cron():
-        await dispatch_daily_espresso_digest("☕ Morning Tech Espresso (8:00 AM)")
+        try:
+            await dispatch_daily_espresso_digest("☕ Morning Tech Espresso (8:00 AM)")
+        except asyncio.CancelledError:
+            print("⏰ [Scheduler] Morning espresso cron cancelled safely.")
+        except Exception as e:
+            print(f"⏰ [Scheduler] Morning espresso error: {e}")
 
     async def evening_briefing_cron():
-        await dispatch_daily_espresso_digest("🌇 Evening Tech Briefing (18:00 PM)")
+        try:
+            await dispatch_daily_espresso_digest("🌇 Evening Tech Briefing (18:00 PM)")
+        except asyncio.CancelledError:
+            print("⏰ [Scheduler] Evening briefing cron cancelled safely.")
+        except Exception as e:
+            print(f"⏰ [Scheduler] Evening briefing error: {e}")
 
     scheduler.add_job(
         morning_espresso_cron, "cron", hour=8, minute=0, id="morning_espresso"
@@ -501,7 +514,21 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    scheduler.shutdown()
+    # Graceful shutdown of scheduler and database connection pool
+    print("🛑 [Lifespan] Shutting down scheduler...")
+    try:
+        if scheduler.running:
+            scheduler.shutdown(wait=False)
+            print("🛑 [Lifespan] Scheduler stopped successfully.")
+    except Exception as e:
+        print(f"🛑 [Lifespan] Error shutting down scheduler: {e}")
+
+    try:
+        print("🛑 [Lifespan] Disposing database connection pool...")
+        await engine.dispose()
+        print("🛑 [Lifespan] Database connection pool disposed successfully.")
+    except Exception as e:
+        print(f"🛑 [Lifespan] Error disposing database engine: {e}")
 
 
 app = FastAPI(
