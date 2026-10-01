@@ -1,7 +1,12 @@
+import asyncio
+import inspect
 import time
 from datetime import datetime, timezone, timedelta
-from typing import List, Optional
+from typing import List, Optional, Any
 import httpx
+
+
+
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -281,3 +286,59 @@ async def trigger_smart_article_notifications(
         }
         msg, markup = format_elite_article_message(data)
         await send_telegram_message(msg, reply_markup=markup)
+
+
+async def crawl_all_active_sources(
+    concurrency_limit: int = 5,
+    run_ai: bool = True,
+    progress_callback: Optional[Any] = None,
+) -> int:
+    """
+    Crawls all active sources concurrently using asyncio.Semaphore for safe throughput.
+    Uses separate database sessions per task to avoid concurrency conflicts with SQLAlchemy.
+    """
+    from app.core.database import AsyncSessionLocal
+
+    sem = asyncio.Semaphore(concurrency_limit)
+    total_new_articles = 0
+
+    async with AsyncSessionLocal() as db:
+        res = await db.execute(select(Source).where(Source.is_active == True))
+        sources = res.scalars().all()
+        # Extract source IDs to process independently in concurrent sessions
+        source_ids = [s.id for s in sources]
+
+    async def crawl_worker(source_id: int) -> int:
+        async with sem:
+            async with AsyncSessionLocal() as session:
+                source = await session.get(Source, source_id)
+                if not source:
+                    return 0
+                if progress_callback:
+                    try:
+                        if inspect.iscoroutinefunction(progress_callback):
+                            await progress_callback(f"Đang cào nguồn: {source.name}...")
+                        else:
+                            progress_callback(f"Đang cào nguồn: {source.name}...")
+                    except Exception as cb_err:
+                        print(f"Progress callback error: {cb_err}")
+
+                try:
+                    return await crawl_single_source(source, session, run_ai=run_ai)
+                except Exception as err:
+                    print(f"Lỗi cào nguồn {source.name} (id={source_id}): {err}")
+                    return 0
+
+    results = await asyncio.gather(
+        *(crawl_worker(s_id) for s_id in source_ids),
+        return_exceptions=True,
+    )
+
+    for r in results:
+        if isinstance(r, int):
+            total_new_articles += r
+        elif isinstance(r, Exception):
+            print(f"Task exception in crawl_all_active_sources: {r}")
+
+    return total_new_articles
+

@@ -84,6 +84,9 @@ async def test_ai_analyzer_deep_fields_parsing():
       }
     }"""
 
+    from app.services.circuit_breaker import ai_circuit_breaker
+    ai_circuit_breaker.reset()
+
     mock_resp = AsyncMock()
     mock_choice = AsyncMock()
     mock_choice.message.content = f"```json\n{mock_completion_json}\n```"
@@ -94,7 +97,7 @@ async def test_ai_analyzer_deep_fields_parsing():
         mock_client.chat.completions.create.return_value = mock_resp
         mock_openai_cls.return_value = mock_client
 
-        res = await analyze_article_with_9router(
+        res, _ = await analyze_article_with_9router(
             "Tối ưu hóa NestJS Microservices",
             "Nội dung bài viết",
             "https://blog.tech/nestjs-pgvector",

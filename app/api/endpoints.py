@@ -2,7 +2,7 @@ import asyncio
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks, Body
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import desc
+from sqlalchemy import desc, func
 from sqlalchemy.orm import selectinload
 from typing import List, Optional
 
@@ -31,7 +31,7 @@ from app.crawlers.article_crawler import (
     fetch_hacker_news,
     extract_clean_article_content,
 )
-from app.services.crawl_service import crawl_single_source
+from app.services.crawl_service import crawl_single_source, crawl_all_active_sources
 from app.services.ai_analyzer import (
     analyze_article_with_9router,
     chat_with_article,
@@ -53,22 +53,22 @@ async def run_crawl_all_task():
     crawl_status["progress"] = "Đang khởi động cào..."
     crawl_status["total_new_articles"] = 0
 
+    def on_progress(msg: str):
+        crawl_status["progress"] = msg
+
     try:
-        async with AsyncSessionLocal() as db:
-            result = await db.execute(select(Source).where(Source.is_active == True))
-            sources = result.scalars().all()
-            for s in sources:
-                crawl_status["progress"] = f"Đang cào nguồn: {s.name}..."
-                try:
-                    added = await crawl_single_source(s, db, run_ai=True)
-                    crawl_status["total_new_articles"] += added
-                except Exception as err:
-                    print(f"Lỗi cào nguồn {s.name}: {err}")
-            crawl_status["progress"] = (
-                f"Hoàn thành! Đã thu thập {crawl_status['total_new_articles']} bài mới."
-            )
+        total = await crawl_all_active_sources(
+            concurrency_limit=5,
+            run_ai=True,
+            progress_callback=on_progress,
+        )
+        crawl_status["total_new_articles"] = total
+        crawl_status["progress"] = (
+            f"Hoàn thành! Đã thu thập {total} bài mới."
+        )
     finally:
         crawl_status["is_crawling"] = False
+
 
 
 # ----------------- SOURCES ENDPOINTS -----------------
@@ -243,17 +243,18 @@ async def list_articles(
         )
 
     # Sorting
+    effective_date = func.coalesce(Article.published_at, Article.created_at)
     if sort_by == "oldest":
-        stmt = stmt.order_by(Article.published_at.asc().nulls_last(), Article.id.asc())
+        stmt = stmt.order_by(effective_date.asc().nulls_last(), Article.id.asc())
     elif sort_by == "score":
         stmt = stmt.order_by(
             Article.relevance_score.desc(),
-            Article.published_at.desc().nulls_last(),
+            effective_date.desc().nulls_last(),
             Article.id.desc(),
         )
     else:  # newest
         stmt = stmt.order_by(
-            Article.published_at.desc().nulls_last(), Article.id.desc()
+            effective_date.desc().nulls_last(), Article.id.desc()
         )
 
     stmt = stmt.limit(limit).offset(offset)

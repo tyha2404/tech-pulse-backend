@@ -8,7 +8,7 @@ from app.core.config import settings
 from app.core.database import engine, Base, AsyncSessionLocal
 from app.models.models import Source
 from app.api.endpoints import router as api_router
-from app.services.crawl_service import crawl_single_source
+from app.services.crawl_service import crawl_single_source, crawl_all_active_sources
 from sqlalchemy.future import select
 
 # Default authoritative sources (Global + Vietnam)
@@ -324,14 +324,12 @@ scheduler = AsyncIOScheduler()
 
 async def scheduled_crawl_job():
     print("⏰ [Scheduler] Running background crawl cycle...")
-    async with AsyncSessionLocal() as db:
-        result = await db.execute(select(Source).where(Source.is_active == True))
-        sources = result.scalars().all()
-        for s in sources:
-            try:
-                await crawl_single_source(s, db, run_ai=True)
-            except Exception as e:
-                print(f"Error crawling {s.name}: {e}")
+    try:
+        total = await crawl_all_active_sources(concurrency_limit=5, run_ai=True)
+        print(f"⏰ [Scheduler] Hoàn tất chu kỳ cào: đã thu thập {total} bài mới.")
+    except Exception as e:
+        print(f"⏰ [Scheduler] Error during scheduled crawl: {e}")
+
 
 
 @asynccontextmanager

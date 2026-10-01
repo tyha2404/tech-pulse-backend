@@ -146,15 +146,18 @@ def format_elite_article_message(article: Dict[str, Any]) -> Tuple[str, Dict[str
     reply_markup = {
         "inline_keyboard": [
             [
+                {"text": "📖 Đọc bài gốc ↗", "url": url},
+                {"text": "⚡ Mở TechPulse ↗", "url": webapp_url},
+            ],
+            [
                 {"text": "👍", "callback_data": f"fb:like:{article_id}"},
                 {"text": "👎", "callback_data": f"fb:dislike:{article_id}"},
                 {"text": "🔖", "callback_data": f"fb:bm:{article_id}"},
-                {"text": "📖 Đọc gốc ↗", "url": url},
-                {"text": "⚡ TechPulse ↗", "url": webapp_url},
-            ]
+            ],
         ]
     }
     return msg, reply_markup
+
 
 
 def format_cluster_alert_message(
@@ -282,3 +285,59 @@ async def answer_telegram_callback(callback_query_id: str, text: str) -> bool:
     except Exception as e:
         logger.error(f"Failed to answer callback: {e}")
         return False
+
+
+async def dispatch_daily_espresso_digest(
+    title_label: str = "☕ Morning Tech Espresso (8:00 AM)",
+) -> bool:
+    """
+    Queries top articles from the last 24 hours, formats a digest and sends it to Telegram.
+    """
+    import datetime
+    from sqlalchemy import select
+    from app.core.database import AsyncSessionLocal
+    from app.models.models import Article
+
+    since = datetime.datetime.utcnow() - datetime.timedelta(hours=24)
+    async with AsyncSessionLocal() as db:
+        stmt = (
+            select(Article)
+            .where(
+                Article.created_at >= since,
+                Article.is_canonical == True,
+                Article.is_hidden == False,
+            )
+            .order_by(Article.relevance_score.desc(), Article.id.desc())
+            .limit(5)
+        )
+        res = await db.execute(stmt)
+        articles = res.scalars().all()
+
+        if not articles:
+            # Fallback to recent top articles if none in 24h
+            fallback_stmt = (
+                select(Article)
+                .where(Article.is_canonical == True, Article.is_hidden == False)
+                .order_by(Article.relevance_score.desc(), Article.id.desc())
+                .limit(5)
+            )
+            res = await db.execute(fallback_stmt)
+            articles = res.scalars().all()
+
+        if not articles:
+            return False
+
+        data_list = [
+            {
+                "id": a.id,
+                "title": a.title,
+                "vietnamese_title": a.vietnamese_title,
+                "relevance_score": a.relevance_score,
+                "url": a.url,
+            }
+            for a in articles
+        ]
+
+        msg, markup = format_espresso_digest_message(data_list, title_label)
+        return await send_telegram_message(msg, reply_markup=markup)
+

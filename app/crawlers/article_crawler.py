@@ -35,11 +35,21 @@ async def fetch_rss_feed(feed_url: str) -> list[dict]:
     items = []
     for entry in parsed.entries[:15]:  # Limit to 15 most recent
         pub_date = None
-        if hasattr(entry, "published_parsed") and entry.published_parsed:
+        parsed_time_tuple = getattr(entry, "published_parsed", None) or getattr(entry, "updated_parsed", None)
+        if parsed_time_tuple:
             try:
-                pub_date = datetime(*entry.published_parsed[:6])
+                pub_date = datetime(*parsed_time_tuple[:6], tzinfo=timezone.utc)
             except Exception:
                 pass
+
+        if not pub_date:
+            date_raw = getattr(entry, "published", None) or getattr(entry, "updated", None)
+            if date_raw and isinstance(date_raw, str):
+                try:
+                    from dateutil import parser as dt_parser
+                    pub_date = dt_parser.parse(date_raw)
+                except Exception:
+                    pass
 
         summary_text = getattr(entry, "summary", "")
         if summary_text:

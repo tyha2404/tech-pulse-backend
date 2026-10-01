@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 from dotenv import load_dotenv
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Absolute path to backend directory and .env file
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -21,6 +21,11 @@ class Settings(BaseSettings):
     DB_PASS: str = os.getenv("DB_PASS", "mypassword")
     DB_NAME: str = os.getenv("DB_NAME", "nexo_dev")
     DB_SSLMODE: str = os.getenv("DB_SSLMODE", "disable")
+    DB_POOL_SIZE: int = int(os.getenv("DB_POOL_SIZE", "10"))
+    DB_MAX_OVERFLOW: int = int(os.getenv("DB_MAX_OVERFLOW", "20"))
+    DB_POOL_TIMEOUT: int = int(os.getenv("DB_POOL_TIMEOUT", "30"))
+    DB_POOL_RECYCLE: int = int(os.getenv("DB_POOL_RECYCLE", "1800"))
+    DB_POOL_PRE_PING: bool = os.getenv("DB_POOL_PRE_PING", "true").lower() in ("true", "1", "yes")
 
     # 9routers AI gateway & Multi-model Fallback
     NINEROUTERS_BASE_URL: str = os.getenv(
@@ -56,9 +61,10 @@ class Settings(BaseSettings):
     def DATABASE_URL(self) -> str:
         return f"postgresql+asyncpg://{self.DB_USER}:{self.DB_PASS}@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
 
-    class Config:
-        env_file = str(ENV_PATH)
-        extra = "ignore"
+    model_config = SettingsConfigDict(
+        env_file=str(ENV_PATH),
+        extra="ignore",
+    )
 
 
 settings = Settings()
