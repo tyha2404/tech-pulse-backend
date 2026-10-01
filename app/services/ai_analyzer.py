@@ -25,15 +25,10 @@ Evaluation & Scoring Criteria:
    - `cons`: Operational overhead, costs, or complexity.
    - `when_not_to_use`: Specific anti-patterns or scenarios where adopting this causes over-engineering.
    - `scalability_bottlenecks`: Performance bottlenecks under high load or massive scale.
-10. `nestjs_blueprint`: Production-grade implementation blueprint in the NestJS / Node.js ecosystem:
-   - `architectural_pattern`: Recommended pattern (e.g., "Hexagonal / Ports & Adapters", "CQRS with Event Sourcing", "Repository & Service Pattern").
-   - `suggested_module_structure`: Recommended NestJS folder & file structure.
-   - `code_snippet`: Concrete, clean TypeScript/NestJS production code sample (Module/Service/Guard/Interceptor/Prisma/BullMQ).
-   - `database_integration`: Practical DB guidance (e.g., Prisma ORM with pgvector, TypeORM, Redis cache, BullMQ).
-11. `learning_path`:
+10. `learning_path`:
    - `prerequisites`: Required foundational knowledge.
    - `recommended_next_topics`: Advanced topics to explore next.
-12. `cluster_topic_key`: Short kebab-case slug identifying the core subject/event for topic clustering (e.g., "deepseek-v3-release", "anthropic-claude-3-7", "postgresql-17-performance", "apple-iphone-launch").
+11. `cluster_topic_key`: Short kebab-case slug identifying the core subject/event for topic clustering (e.g., "deepseek-v3-release", "anthropic-claude-3-7", "postgresql-17-performance", "apple-iphone-launch").
 
 CRITICAL LANGUAGE REQUIREMENT:
 All textual values intended for users (`vietnamese_title`, `vietnamese_summary`, `key_takeaways`, `pros`, `cons`, etc.) MUST be written in 100% natural, fluent Vietnamese.
@@ -55,12 +50,6 @@ Return ONLY a valid JSON object matching this schema (do not wrap in markdown or
     "cons": ["..."],
     "when_not_to_use": ["..."],
     "scalability_bottlenecks": ["..."]
-  },
-  "nestjs_blueprint": {
-    "architectural_pattern": "...",
-    "suggested_module_structure": "...",
-    "code_snippet": "...",
-    "database_integration": "..."
   },
   "learning_path": {
     "prerequisites": ["..."],
@@ -378,3 +367,101 @@ Please generate the weekly tech radar digest JSON following the system instructi
             "Xây dựng API gateway phân luồng traffic giữa API truyền thống và Agentic LLM flows",
         ],
     }
+
+
+BLUEPRINT_SYSTEM_PROMPT = """You are a Principal Backend Engineer & System Architect specializing in NestJS, TypeScript, Microservices, and scalable software architecture.
+Your task is to analyze the technical article and generate a production-grade, highly actionable NestJS / TypeScript implementation blueprint.
+
+Return ONLY a valid JSON object matching this exact schema:
+{
+  "architectural_pattern": "Recommended pattern (e.g. Hexagonal Architecture / CQRS / Event-Driven / Modular Service Pattern)",
+  "suggested_module_structure": "src/modules/...\\n├── controllers/\\n├── services/\\n└── ...",
+  "code_snippet": "// Concrete, production-ready TypeScript/NestJS code snippet implementing key ideas",
+  "database_integration": "Guidance on database, ORM (Prisma/TypeORM), indexing, caching (Redis), or message queue (BullMQ/Kafka)"
+}
+"""
+
+
+async def generate_blueprint_on_demand(
+    article_title: str,
+    article_content: str,
+    vietnamese_summary: Optional[str] = None,
+) -> dict:
+    """Generate on-demand NestJS code blueprint and architectural pattern for an article."""
+    client = AsyncOpenAI(
+        base_url=settings.NINEROUTERS_BASE_URL,
+        api_key=settings.NINEROUTERS_API_KEY,
+        timeout=35.0,
+    )
+
+    truncated_content = article_content[:4000] if article_content else article_title
+    user_prompt = f"""ARTICLE TITLE: {article_title}
+SUMMARY: {vietnamese_summary or ''}
+CONTENT:
+{truncated_content}
+
+Generate a comprehensive NestJS architectural blueprint and implementation code snippet for this topic.
+Output ONLY the JSON object.
+"""
+
+    models_to_try = settings.fallback_models_list or [
+        settings.AI_MODEL,
+        "claude-3-5-haiku",
+        "gpt-4o-mini",
+    ]
+
+    for model_name in models_to_try:
+        if not ai_circuit_breaker.can_execute(model_name):
+            continue
+        try:
+            response = await client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": BLUEPRINT_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.3,
+            )
+            raw_text = response.choices[0].message.content.strip()
+            data = _clean_json_response(raw_text)
+            ai_circuit_breaker.record_success(model_name)
+            return {
+                "architectural_pattern": data.get(
+                    "architectural_pattern",
+                    "Modular Service Pattern with Hexagonal Adapters",
+                ),
+                "suggested_module_structure": data.get(
+                    "suggested_module_structure", "src/modules/feature/"
+                ),
+                "code_snippet": data.get(
+                    "code_snippet", "// Code implementation blueprint"
+                ),
+                "database_integration": data.get(
+                    "database_integration", "PostgreSQL / Prisma ORM"
+                ),
+            }
+        except Exception as err:
+            ai_circuit_breaker.record_failure(model_name)
+            continue
+
+    # Fallback if AI providers unavailable
+    clean_mod_name = (
+        re.sub(r"[^a-zA-Z0-9]", "", article_title.lower())[:15] or "feature"
+    )
+    return {
+        "architectural_pattern": "Modular Service Pattern (Fallback Blueprint)",
+        "suggested_module_structure": f"src/modules/{clean_mod_name}/\\n├── {clean_mod_name}.controller.ts\\n├── {clean_mod_name}.service.ts\\n├── dto/\\n└── entities/",
+        "code_snippet": f"""import {{ Injectable, Logger }} from '@nestjs/common';
+
+@Injectable()
+export class {clean_mod_name.capitalize()}Service {{
+  private readonly logger = new Logger('{clean_mod_name.capitalize()}Service');
+
+  async executeOperation(): Promise<{{ success: boolean; data: string }}> {{
+    this.logger.log('Executing {clean_mod_name} on-demand blueprint logic');
+    return {{ success: true, data: 'Initialized {clean_mod_name}' }};
+  }}
+}}""",
+        "database_integration": "PostgreSQL with Prisma ORM / pgvector extension.",
+    }
+

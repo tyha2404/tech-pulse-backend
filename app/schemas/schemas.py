@@ -64,6 +64,18 @@ class NestJSBlueprint(BaseModel):
     database_integration: Optional[str] = None
 
 
+class ArticleBlueprintResponse(NestJSBlueprint):
+    article_id: Optional[int] = None
+    nestjs_blueprint: Optional[Dict[str, Any]] = None
+
+
+class MarkdownExportResponse(BaseModel):
+    filename: str
+    markdown: str
+    title: str
+
+
+
 class LearningPath(BaseModel):
     prerequisites: List[str] = []
     recommended_next_topics: List[str] = []

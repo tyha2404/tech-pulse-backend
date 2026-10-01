@@ -1,5 +1,6 @@
 import asyncio
-from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks, Body
+import re
+from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks, Body, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import desc, func
@@ -24,6 +25,9 @@ from app.schemas.schemas import (
     ArticleFeedbackCreate,
     ArticleFeedbackResponse,
     AdminMetricsResponse,
+    NestJSBlueprint,
+    ArticleBlueprintResponse,
+    MarkdownExportResponse,
 )
 from app.crawlers.feed_discoverer import discover_feed_url
 from app.crawlers.article_crawler import (
@@ -36,6 +40,7 @@ from app.services.ai_analyzer import (
     analyze_article_with_9router,
     chat_with_article,
     generate_weekly_radar_digest,
+    generate_blueprint_on_demand,
 )
 from app.core.config import settings
 
@@ -412,9 +417,14 @@ async def summarize_article_on_demand(
             content_to_analyze = fresh_clean
             article.raw_content = fresh_clean
 
-    analysis = await analyze_article_with_9router(
+    analysis_res = await analyze_article_with_9router(
         article.title, content_to_analyze, article.url
     )
+    if isinstance(analysis_res, tuple):
+        analysis, model_used = analysis_res
+    else:
+        analysis = analysis_res
+        model_used = settings.AI_MODEL
 
     article.is_processed = True
     article.is_worth_reading = analysis.is_worth_reading
@@ -431,7 +441,7 @@ async def summarize_article_on_demand(
         article.nestjs_blueprint = analysis.nestjs_blueprint.model_dump()
     if analysis.learning_path:
         article.learning_path = analysis.learning_path.model_dump()
-    article.ai_model_used = settings.AI_MODEL
+    article.ai_model_used = model_used
 
     await db.commit()
     await db.refresh(article)
@@ -443,6 +453,258 @@ async def summarize_article_on_demand(
         article.raw_content or article.vietnamese_summary or article.title
     )
     return resp
+
+
+def generate_obsidian_markdown(article: Article) -> tuple[str, str]:
+    """Generate Obsidian-compatible Markdown with YAML frontmatter and article filename."""
+    title_escaped = (article.vietnamese_title or article.title).replace('"', '\\"')
+    pub_date = (
+        article.published_at.isoformat()
+        if article.published_at
+        else (article.created_at.isoformat() if article.created_at else "")
+    )
+    source_name = article.source.name if article.source else "TechPulse"
+    takeaways = article.key_takeaways or []
+    tags = article.tags or []
+
+    # Obsidian YAML frontmatter (title, score, takeaways, date, original link)
+    fm_lines = [
+        "---",
+        f'title: "{title_escaped}"',
+        f"score: {article.relevance_score or 0.0}",
+        f'date: "{pub_date}"',
+        f'original_link: "{article.url}"',
+        f'source: "{source_name}"',
+        f"is_worth_reading: {'true' if article.is_worth_reading else 'false'}",
+    ]
+    if tags:
+        fm_lines.append("tags:")
+        for t in tags:
+            clean_t = str(t).replace('"', '\\"')
+            fm_lines.append(f'  - "{clean_t}"')
+    if takeaways:
+        fm_lines.append("takeaways:")
+        for tw in takeaways:
+            clean_tw = str(tw).replace('"', '\\"')
+            fm_lines.append(f'  - "{clean_tw}"')
+    fm_lines.append("---")
+
+    lines = [
+        "\n".join(fm_lines),
+        "",
+        f"# {article.vietnamese_title or article.title}",
+        "",
+        f"> **Nguồn:** [{source_name}]({article.url}) | **Điểm đánh giá:** {article.relevance_score or 0.0}/10",
+        "",
+    ]
+
+    if article.vietnamese_summary:
+        lines.extend([
+            "## 📌 Tóm tắt nội dung",
+            article.vietnamese_summary,
+            "",
+        ])
+
+    if takeaways:
+        lines.append("## 💡 Điểm cốt lõi (Key Takeaways)")
+        for tw in takeaways:
+            lines.append(f"- {tw}")
+        lines.append("")
+
+    if article.new_tech_stacks:
+        lines.append("## ⚡ Công nghệ mới xuất hiện")
+        for ts in article.new_tech_stacks:
+            if isinstance(ts, dict):
+                lines.append(
+                    f"- **{ts.get('name', '')}** ({ts.get('category', 'Tech')}): {ts.get('desc', '')}"
+                )
+        lines.append("")
+
+    tradeoffs = article.architectural_tradeoffs or {}
+    if isinstance(tradeoffs, dict) and any(tradeoffs.values()):
+        lines.append("## ⚖️ Đánh đổi kiến trúc (Architectural Tradeoffs)")
+        if tradeoffs.get("pros"):
+            lines.append("### Ưu điểm")
+            for p in tradeoffs["pros"]:
+                lines.append(f"- {p}")
+        if tradeoffs.get("cons"):
+            lines.append("### Nhược điểm")
+            for c in tradeoffs["cons"]:
+                lines.append(f"- {c}")
+        if tradeoffs.get("when_not_to_use"):
+            lines.append("### Khi nào không nên dùng")
+            for w in tradeoffs["when_not_to_use"]:
+                lines.append(f"- {w}")
+        if tradeoffs.get("scalability_bottlenecks"):
+            lines.append("### Điểm nghẽn khi Scale")
+            for s in tradeoffs["scalability_bottlenecks"]:
+                lines.append(f"- {s}")
+        lines.append("")
+
+    blueprint = article.nestjs_blueprint or {}
+    if isinstance(blueprint, dict) and (
+        blueprint.get("code_snippet") or blueprint.get("architectural_pattern")
+    ):
+        lines.append("## 🧱 NestJS Architecture & Blueprint")
+        if blueprint.get("architectural_pattern"):
+            lines.append(
+                f"**Mô hình kiến trúc:** {blueprint.get('architectural_pattern')}\n"
+            )
+        if blueprint.get("suggested_module_structure"):
+            lines.append(
+                f"**Cấu trúc thư mục gợi ý:**\n```text\n{blueprint.get('suggested_module_structure')}\n```\n"
+            )
+        if blueprint.get("code_snippet"):
+            lines.append(
+                f"**Mã nguồn triển khai:**\n```typescript\n{blueprint.get('code_snippet')}\n```\n"
+            )
+        if blueprint.get("database_integration"):
+            lines.append(
+                f"**Tích hợp Cơ sở dữ liệu:** {blueprint.get('database_integration')}\n"
+            )
+        lines.append("")
+
+    content_body = article.raw_content or ""
+    if content_body:
+        lines.extend([
+            "## 📖 Nội dung chi tiết bài viết",
+            content_body,
+            "",
+        ])
+
+    slug = re.sub(
+        r"[^a-zA-Z0-9_-]+",
+        "-",
+        (article.vietnamese_title or article.title).lower(),
+    ).strip("-")[:60]
+    filename = f"{slug or f'article-{article.id}'}.md"
+    return "\n".join(lines), filename
+
+
+@router.post(
+    "/articles/{article_id}/generate-blueprint",
+    response_model=ArticleBlueprintResponse,
+)
+async def generate_blueprint_endpoint(
+    article_id: int,
+    force: bool = Query(
+        False, description="Tạo lại blueprint ngay cả khi đã tồn tại"
+    ),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(Article)
+        .options(selectinload(Article.source))
+        .where(Article.id == article_id)
+    )
+    article = result.scalar_one_or_none()
+    if not article:
+        raise HTTPException(status_code=404, detail="Không tìm thấy bài viết")
+
+    if (
+        not force
+        and article.nestjs_blueprint
+        and isinstance(article.nestjs_blueprint, dict)
+        and article.nestjs_blueprint.get("code_snippet")
+    ):
+        bp = article.nestjs_blueprint
+        return ArticleBlueprintResponse(
+            architectural_pattern=bp.get("architectural_pattern"),
+            suggested_module_structure=bp.get("suggested_module_structure"),
+            code_snippet=bp.get("code_snippet"),
+            database_integration=bp.get("database_integration"),
+            nestjs_blueprint=bp,
+            article_id=article.id,
+        )
+
+    content_to_analyze = article.raw_content or ""
+    if len(content_to_analyze) < 200:
+        fresh_clean = await extract_clean_article_content(
+            article.url, max_length=5000
+        )
+        if fresh_clean:
+            content_to_analyze = fresh_clean
+            article.raw_content = fresh_clean
+
+    blueprint_data = await generate_blueprint_on_demand(
+        article_title=article.title,
+        article_content=content_to_analyze,
+        vietnamese_summary=article.vietnamese_summary,
+    )
+
+    article.nestjs_blueprint = blueprint_data
+    await db.commit()
+    await db.refresh(article)
+
+    return ArticleBlueprintResponse(
+        architectural_pattern=blueprint_data.get("architectural_pattern"),
+        suggested_module_structure=blueprint_data.get(
+            "suggested_module_structure"
+        ),
+        code_snippet=blueprint_data.get("code_snippet"),
+        database_integration=blueprint_data.get("database_integration"),
+        nestjs_blueprint=blueprint_data,
+        article_id=article.id,
+    )
+
+
+@router.get("/articles/{article_id}/markdown")
+@router.get("/articles/{article_id}/export-markdown")
+async def export_article_markdown(
+    article_id: int,
+    format: str = Query("text", pattern="^(text|json|markdown)$"),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(Article)
+        .options(selectinload(Article.source))
+        .where(Article.id == article_id)
+    )
+    article = result.scalar_one_or_none()
+    if not article:
+        raise HTTPException(status_code=404, detail="Không tìm thấy bài viết")
+
+    md_content, filename = generate_obsidian_markdown(article)
+
+    if format == "json":
+        return MarkdownExportResponse(
+            filename=filename,
+            markdown=md_content,
+            title=article.vietnamese_title or article.title,
+        )
+
+    return Response(
+        content=md_content,
+        media_type="text/markdown; charset=utf-8",
+        headers={
+            "Content-Disposition": f'inline; filename="{filename}"'
+        },
+    )
+
+
+@router.post(
+    "/articles/{article_id}/export-markdown",
+    response_model=MarkdownExportResponse,
+)
+async def post_export_article_markdown(
+    article_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(Article)
+        .options(selectinload(Article.source))
+        .where(Article.id == article_id)
+    )
+    article = result.scalar_one_or_none()
+    if not article:
+        raise HTTPException(status_code=404, detail="Không tìm thấy bài viết")
+
+    md_content, filename = generate_obsidian_markdown(article)
+    return MarkdownExportResponse(
+        filename=filename,
+        markdown=md_content,
+        title=article.vietnamese_title or article.title,
+    )
 
 
 @router.post("/articles/{article_id}/chat", response_model=ArticleChatResponse)
