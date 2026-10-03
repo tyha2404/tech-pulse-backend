@@ -32,11 +32,15 @@ class Settings(BaseSettings):
         "NINEROUTERS_BASE_URL", "http://127.0.0.1:20128/v1"
     )
     NINEROUTERS_API_KEY: str = os.getenv("NINEROUTERS_API_KEY", "9router-local")
-    AI_MODEL: str = os.getenv("AI_MODEL", "gemini-2.5-flash")
+    AI_MODEL: str = os.getenv("AI_MODEL", "nexo-chat")
     AI_FALLBACK_MODELS: str = os.getenv(
-        "AI_FALLBACK_MODELS", "gemini-2.5-flash,claude-3-5-haiku,gpt-4o-mini"
+        "AI_FALLBACK_MODELS", "gemini/gemini-3.8-flash,groq/openai/gpt-oss-120b"
     )
     EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
+
+    # AI Request Timeouts (Interactive/Chat vs Background/Crawl/Blueprint)
+    AI_TIMEOUT_INTERACTIVE: float = float(os.getenv("AI_TIMEOUT_INTERACTIVE", "30.0"))
+    AI_TIMEOUT_BACKGROUND: float = float(os.getenv("AI_TIMEOUT_BACKGROUND", "60.0"))
 
     # Scheduler
     CRAWL_INTERVAL_MINUTES: int = int(os.getenv("CRAWL_INTERVAL_MINUTES", "60"))
@@ -55,7 +59,13 @@ class Settings(BaseSettings):
 
     @property
     def fallback_models_list(self) -> list[str]:
-        return [m.strip() for m in self.AI_FALLBACK_MODELS.split(",") if m.strip()]
+        raw_list = [m.strip() for m in self.AI_FALLBACK_MODELS.split(",") if m.strip()]
+        # Ensure AI_MODEL is always the primary model first in the resolution chain
+        models = [self.AI_MODEL]
+        for m in raw_list:
+            if m not in models:
+                models.append(m)
+        return models
 
     @property
     def DATABASE_URL(self) -> str:

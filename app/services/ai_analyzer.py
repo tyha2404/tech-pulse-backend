@@ -138,7 +138,7 @@ async def analyze_article_with_9router(
     client = AsyncOpenAI(
         base_url=settings.NINEROUTERS_BASE_URL,
         api_key=settings.NINEROUTERS_API_KEY,
-        timeout=35.0,
+        timeout=settings.AI_TIMEOUT_BACKGROUND,
     )
 
     truncated_content = content[:3000] if content else title
@@ -153,7 +153,7 @@ Analyze the article according to your system instructions. Output ONLY the requi
 
     models_to_try = settings.fallback_models_list
     if not models_to_try:
-        models_to_try = [settings.AI_MODEL, "claude-3-5-haiku", "gpt-4o-mini"]
+        models_to_try = [settings.AI_MODEL, "gemini/gemini-3.8-flash", "groq/openai/gpt-oss-120b"]
 
     last_exception = None
 
@@ -200,7 +200,7 @@ async def chat_with_article(
     client = AsyncOpenAI(
         base_url=settings.NINEROUTERS_BASE_URL,
         api_key=settings.NINEROUTERS_API_KEY,
-        timeout=35.0,
+        timeout=settings.AI_TIMEOUT_INTERACTIVE,
     )
 
     system_instruction = f"""You are a Principal Backend Engineer & AI Systems Architect, specialized in NestJS, TypeScript, Microservices, RAG, and AI Engineering.
@@ -234,7 +234,11 @@ FOLLOW_UPS:
     messages.append({"role": "user", "content": user_message})
 
     # Try models with circuit breaker
-    models_to_try = settings.fallback_models_list or [settings.AI_MODEL, "claude-3-5-haiku", "gpt-4o-mini"]
+    models_to_try = settings.fallback_models_list or [
+        settings.AI_MODEL,
+        "gemini/gemini-3.8-flash",
+        "groq/openai/gpt-oss-120b",
+    ]
 
     for model_name in models_to_try:
         if not ai_circuit_breaker.can_execute(model_name):
@@ -281,7 +285,7 @@ async def generate_weekly_radar_digest(top_articles: list) -> dict:
     client = AsyncOpenAI(
         base_url=settings.NINEROUTERS_BASE_URL,
         api_key=settings.NINEROUTERS_API_KEY,
-        timeout=35.0,
+        timeout=settings.AI_TIMEOUT_BACKGROUND,
     )
 
     articles_summary = []
@@ -327,7 +331,11 @@ Return ONLY a valid JSON object matching this schema:
 Please generate the weekly tech radar digest JSON following the system instructions.
 """
 
-    models_to_try = settings.fallback_models_list or [settings.AI_MODEL, "claude-3-5-haiku", "gpt-4o-mini"]
+    models_to_try = settings.fallback_models_list or [
+        settings.AI_MODEL,
+        "gemini/gemini-3.8-flash",
+        "groq/openai/gpt-oss-120b",
+    ]
     for model_name in models_to_try:
         if not ai_circuit_breaker.can_execute(model_name):
             continue
@@ -391,8 +399,9 @@ async def generate_blueprint_on_demand(
     client = AsyncOpenAI(
         base_url=settings.NINEROUTERS_BASE_URL,
         api_key=settings.NINEROUTERS_API_KEY,
-        timeout=35.0,
+        timeout=settings.AI_TIMEOUT_BACKGROUND,
     )
+
 
     truncated_content = article_content[:4000] if article_content else article_title
     user_prompt = f"""ARTICLE TITLE: {article_title}
@@ -406,9 +415,10 @@ Output ONLY the JSON object.
 
     models_to_try = settings.fallback_models_list or [
         settings.AI_MODEL,
-        "claude-3-5-haiku",
-        "gpt-4o-mini",
+        "gemini/gemini-3.8-flash",
+        "groq/openai/gpt-oss-120b",
     ]
+
 
     for model_name in models_to_try:
         if not ai_circuit_breaker.can_execute(model_name):
