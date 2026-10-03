@@ -253,19 +253,18 @@ async def list_articles(
             | Article.vietnamese_title.ilike(f"%{query}%")
         )
 
-    # Sorting
-    effective_date = func.coalesce(Article.published_at, Article.created_at)
+    # Sorting: order by created_at so newest created/crawled articles appear at the top
     if sort_by == "oldest":
-        stmt = stmt.order_by(effective_date.asc().nulls_last(), Article.id.asc())
+        stmt = stmt.order_by(Article.created_at.asc(), Article.id.asc())
     elif sort_by == "score":
         stmt = stmt.order_by(
             Article.relevance_score.desc(),
-            effective_date.desc().nulls_last(),
+            Article.created_at.desc(),
             Article.id.desc(),
         )
     else:  # newest
         stmt = stmt.order_by(
-            effective_date.desc().nulls_last(), Article.id.desc()
+            Article.created_at.desc(), Article.id.desc()
         )
 
     stmt = stmt.limit(limit).offset(offset)

@@ -56,20 +56,20 @@ async def test_sorting_coalesce_newest_oldest_score():
 
         effective_date = func.coalesce(Article.published_at, Article.created_at)
 
-        # 1. Test sort_by = newest (effective_date desc)
-        stmt_newest = select(Article).order_by(effective_date.desc().nulls_last(), Article.id.desc())
+        # 1. Test sort_by = newest (created_at desc)
+        stmt_newest = select(Article).order_by(Article.created_at.desc(), Article.id.desc())
         items_newest = (await session.execute(stmt_newest)).scalars().all()
         assert [a.id for a in items_newest] == [1, 2, 3]
 
-        # 2. Test sort_by = oldest (effective_date asc)
-        stmt_oldest = select(Article).order_by(effective_date.asc().nulls_last(), Article.id.asc())
+        # 2. Test sort_by = oldest (created_at asc)
+        stmt_oldest = select(Article).order_by(Article.created_at.asc(), Article.id.asc())
         items_oldest = (await session.execute(stmt_oldest)).scalars().all()
         assert [a.id for a in items_oldest] == [3, 2, 1]
 
-        # 3. Test sort_by = score (score desc, effective_date desc)
+        # 3. Test sort_by = score (score desc, created_at desc)
         stmt_score = select(Article).order_by(
             Article.relevance_score.desc(),
-            effective_date.desc().nulls_last(),
+            Article.created_at.desc(),
             Article.id.desc(),
         )
         items_score = (await session.execute(stmt_score)).scalars().all()
