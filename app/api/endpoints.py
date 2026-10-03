@@ -42,6 +42,7 @@ from app.services.ai_analyzer import (
     generate_weekly_radar_digest,
     generate_blueprint_on_demand,
 )
+from app.services.circuit_breaker import ai_circuit_breaker
 from app.core.config import settings
 
 router = APIRouter()
