@@ -67,3 +67,33 @@ async def test_crawl_all_active_sources_semaphore():
         assert mock_crawl_single.call_count == 3
         assert len(progress_messages) == 3
 
+
+@pytest.mark.asyncio
+async def test_crawl_single_source_http_error_graceful():
+    from unittest.mock import AsyncMock, patch, MagicMock
+    import httpx
+    from app.services.crawl_service import crawl_single_source
+    from app.models.models import Source
+
+    mock_db = AsyncMock()
+    source = Source(id=46, name="24h Tech", url="https://www.24h.com.vn", feed_url="https://www.24h.com.vn/rss.xml", source_type="rss")
+
+    request = httpx.Request("GET", source.feed_url)
+    response = httpx.Response(403, request=request)
+    http_error = httpx.HTTPStatusError("Client error '403 Forbidden'", request=request, response=response)
+
+    with patch("app.services.crawl_service.fetch_rss_feed", side_effect=http_error):
+        # Should NOT raise HTTPStatusError or crash
+        articles_added = await crawl_single_source(source, mock_db, run_ai=False)
+        assert articles_added == 0
+        assert source.status == "error"
+        assert "403 Forbidden" in (source.last_error or "")
+        mock_db.rollback.assert_awaited()
+        # Verify crawl_run was added and committed with http_status 403
+        assert mock_db.add.called
+        crawl_run = mock_db.add.call_args[0][0]
+        assert crawl_run.status == "failed"
+        assert crawl_run.http_status == 403
+        mock_db.commit.assert_awaited()
+
+

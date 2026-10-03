@@ -1,9 +1,12 @@
+import logging
 import asyncio
 import inspect
 import time
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Any
 import httpx
+
+logger = logging.getLogger(__name__)
 
 
 
@@ -207,8 +210,15 @@ async def crawl_single_source(
         await db.rollback()
         duration_ms = int((time.time() - start_time) * 1000)
         error_message = str(e)
+        logger.error(
+            f"Lỗi khi cào nguồn '{getattr(source, 'name', 'Unknown')}' (id={getattr(source, 'id', None)}): {error_message}"
+        )
         source.status = "error"
         source.last_error = error_message
+
+        status_code = 500
+        if isinstance(e, httpx.HTTPStatusError) and e.response is not None:
+            status_code = e.response.status_code
         
         # Record failed CrawlRun
         crawl_run = CrawlRun(
@@ -216,7 +226,7 @@ async def crawl_single_source(
             started_at=started_at,
             finished_at=datetime.now(timezone.utc),
             duration_ms=duration_ms,
-            http_status=500,
+            http_status=status_code,
             articles_found=articles_found,
             articles_new=articles_added,
             status="failed",
@@ -227,7 +237,6 @@ async def crawl_single_source(
             await db.commit()
         except Exception:
             pass
-        raise e
 
     return articles_added
 
