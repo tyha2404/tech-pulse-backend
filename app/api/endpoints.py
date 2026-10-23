@@ -1034,7 +1034,7 @@ async def semantic_search_articles(
     out = []
     for art in articles:
         resp_item = ArticleResponse.model_validate(art)
-        resp_item.similarity_score = 0.85
+        resp_item.similarity_score = None  # keyword match, no vector similarity to report
         resp_item.source_name = art.source.name if art.source else None
         out.append(resp_item)
     return out
