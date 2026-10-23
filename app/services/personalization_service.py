@@ -1,7 +1,7 @@
 from typing import List, Dict, Optional, Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import defer, selectinload
 from sqlalchemy import desc
 from app.models.models import UserPreference, Article, Source, ArticleFeedback
 
@@ -56,7 +56,11 @@ async def get_personalized_feed(
     # Fetch candidate articles
     stmt = (
         select(Article)
-        .options(selectinload(Article.source))
+        .options(
+            selectinload(Article.source),
+            defer(Article.raw_content, raiseload=True),
+            defer(Article.embedding, raiseload=True),
+        )
         .where(
             Article.is_canonical == True,
             Article.is_hidden == False,

@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict, HttpUrl
+from pydantic import BaseModel, ConfigDict, HttpUrl, field_validator
 from typing import List, Optional, Any, Dict
 from datetime import datetime
 
@@ -132,6 +132,12 @@ class ArticleResponse(BaseModel):
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+    @field_validator("reading_time_minutes", mode="before")
+    @classmethod
+    def _default_reading_time(cls, v):
+        # Column is NULL for rows not yet backfilled or objects never flushed
+        return v or 1
 
 
 class AIAnalysisResult(BaseModel):

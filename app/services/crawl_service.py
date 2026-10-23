@@ -5,13 +5,9 @@ import time
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Any
 import httpx
-
-logger = logging.getLogger(__name__)
-
-
-
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.future import select
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import load_only
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.models import Source, Article, CrawlRun
 from app.crawlers.article_crawler import (
@@ -23,7 +19,119 @@ from app.crawlers.article_crawler import (
     make_tz_aware,
 )
 from app.services.ai_analyzer import analyze_article_with_9router
+from app.services.clustering_service import assign_article_cluster
+from app.services.embedding_service import generate_article_embedding
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
+
+# Prevents the scheduled crawl and a manual /crawl-all from running at the same time
+crawl_lock = asyncio.Lock()
+
+# Caps concurrent extract + LLM + embedding work across every source being crawled
+_article_semaphore = asyncio.Semaphore(settings.AI_MAX_CONCURRENCY)
+
+
+def estimate_reading_time(text: Optional[str]) -> int:
+    """Average reading speed ~ 200 words per minute"""
+    if not text:
+        return 1
+    return max(1, round(len(text.split()) / 200))
+
+
+async def _fetch_source_items(source: Source) -> list[dict]:
+    target_url = source.feed_url or source.url
+    source_type = (source.source_type or "").lower()
+
+    if source_type == "hn" or "ycombinator.com" in source.url:
+        return await fetch_hacker_news()
+    if source_type == "json":
+        return await fetch_json_feed(target_url)
+    if source_type == "sitemap":
+        return await fetch_sitemap_feed(target_url)
+    if source_type == "rss" or source.feed_url:
+        return await fetch_rss_feed(target_url)
+    # Fallback attempt: rss, then direct
+    try:
+        return await fetch_rss_feed(source.url)
+    except Exception:
+        return []
+
+
+async def _prepare_article(item: dict, source_id: int, run_ai: bool) -> Article:
+    """Network-bound work for one feed item: body extraction, AI analysis, embedding.
+    Touches no DB session, so many of these can run in parallel."""
+    async with _article_semaphore:
+        full_content = item.get("raw_content", "")
+        if len(full_content) < 300:
+            extracted = await extract_clean_article_content(item["url"])
+            if extracted:
+                full_content = extracted
+
+        now_utc = datetime.now(timezone.utc)
+        article = Article(
+            source_id=source_id,
+            title=item["title"],
+            url=item["url"],
+            author=item.get("author"),
+            published_at=make_tz_aware(item.get("published_at")) or now_utc,
+            raw_content=full_content,
+            reading_time_minutes=estimate_reading_time(full_content or item["title"]),
+            is_processed=False,
+            created_at=now_utc,
+        )
+
+        if run_ai:
+            # AI analysis with 9routers (multi-model fallback)
+            analysis, model_used = await analyze_article_with_9router(
+                title=article.title, content=full_content, url=article.url
+            )
+            article.is_processed = True
+            article.is_worth_reading = analysis.is_worth_reading
+            article.relevance_score = analysis.relevance_score
+            article.vietnamese_title = analysis.vietnamese_title
+            article.vietnamese_summary = analysis.vietnamese_summary
+            article.key_takeaways = analysis.key_takeaways
+            article.new_tech_stacks = [t.model_dump() for t in analysis.new_tech_stack]
+            article.tags = analysis.tags
+            article.target_audience = analysis.target_audience
+            article.architectural_tradeoffs = (
+                analysis.architectural_tradeoffs.model_dump()
+                if analysis.architectural_tradeoffs
+                else {}
+            )
+            article.nestjs_blueprint = (
+                analysis.nestjs_blueprint.model_dump()
+                if analysis.nestjs_blueprint
+                else {}
+            )
+            article.learning_path = (
+                analysis.learning_path.model_dump() if analysis.learning_path else {}
+            )
+            article.cluster_topic_key = analysis.cluster_topic_key
+            article.ai_model_used = model_used
+
+            # Semantic search vector (Module 4). Left empty when the gateway is down so
+            # backfill_missing_embeddings can fill it later instead of storing a fake vector.
+            try:
+                article.embedding = await generate_article_embedding(
+                    article, allow_fallback=False
+                )
+            except Exception as emb_err:
+                logger.warning(f"Embedding generation failed for {article.url}: {emb_err}")
+
+        return article
+
+
+async def _cluster_source_names(db: AsyncSession, cluster_id: Optional[str]) -> List[str]:
+    if not cluster_id:
+        return []
+    res = await db.execute(
+        select(Source.name)
+        .join(Article, Article.source_id == Source.id)
+        .where(Article.cluster_id == cluster_id)
+    )
+    return [name for name in res.scalars().all() if name]
 
 
 async def crawl_single_source(
@@ -32,6 +140,10 @@ async def crawl_single_source(
     """Crawls a given source (RSS, JSON Feed, Sitemap, HN) and tracks CrawlRun metrics"""
     start_time = time.time()
     started_at = datetime.now(timezone.utc)
+    # Captured up front: after a rollback `source` is expired, and reading its
+    # attributes would trigger a lazy load that fails under AsyncSession
+    source_id = source.id
+    source_name = source.name
     source.status = "pending"
     await db.commit()
 
@@ -41,153 +153,102 @@ async def crawl_single_source(
     http_status = 200
 
     try:
-        raw_items = []
-        target_url = source.feed_url or source.url
-        source_type = (source.source_type or "").lower()
-
-        if source_type == "hn" or "ycombinator.com" in source.url:
-            raw_items = await fetch_hacker_news()
-        elif source_type == "json":
-            raw_items = await fetch_json_feed(target_url)
-        elif source_type == "sitemap":
-            raw_items = await fetch_sitemap_feed(target_url)
-        elif source_type == "rss" or source.feed_url:
-            raw_items = await fetch_rss_feed(target_url)
-        else:
-            # Fallback attempt: rss, then direct
-            try:
-                raw_items = await fetch_rss_feed(source.url)
-            except Exception:
-                raw_items = []
-
+        raw_items = await _fetch_source_items(source)
         articles_found = len(raw_items)
 
+        # Dedupe against the DB in one query, and within the feed itself
+        urls = list(dict.fromkeys(i["url"] for i in raw_items if i.get("url")))
+        existing_urls = set()
+        if urls:
+            existing_res = await db.execute(
+                select(Article.url).where(Article.url.in_(urls))
+            )
+            existing_urls = set(existing_res.scalars().all())
+        new_items, seen = [], set(existing_urls)
         for item in raw_items:
-            # Check if already exists
-            existing = await db.execute(
-                select(Article).where(Article.url == item["url"])
-            )
-            if existing.scalar_one_or_none():
-                continue
+            if item.get("url") and item["url"] not in seen:
+                seen.add(item["url"])
+                new_items.append(item)
 
-            # Extract full text if raw_content is short
-            full_content = item.get("raw_content", "")
-            if len(full_content) < 300:
-                extracted = await extract_clean_article_content(item["url"])
-                if extracted:
-                    full_content = extracted
+        results = await asyncio.gather(
+            *(_prepare_article(item, source_id, run_ai) for item in new_items),
+            return_exceptions=True,
+        )
+        prepared = []
+        for item, result in zip(new_items, results):
+            if isinstance(result, BaseException):
+                logger.error(f"Failed to process {item['url']}: {result}")
+            else:
+                prepared.append(result)
 
-            now_utc = datetime.now(timezone.utc)
-            pub_at = make_tz_aware(item.get("published_at")) or now_utc
-
-            article = Article(
-                source_id=source.id,
-                title=item["title"],
-                url=item["url"],
-                author=item.get("author"),
-                published_at=pub_at,
-                raw_content=full_content,
-                is_processed=False,
-                created_at=now_utc,
-            )
-
-            # AI analysis with 9routers (multi-model fallback)
-            if run_ai:
-                analysis, model_used = await analyze_article_with_9router(
-                    title=article.title, content=full_content, url=article.url
-                )
-                article.is_processed = True
-                article.is_worth_reading = analysis.is_worth_reading
-                article.relevance_score = analysis.relevance_score
-                article.vietnamese_title = analysis.vietnamese_title
-                article.vietnamese_summary = analysis.vietnamese_summary
-                article.key_takeaways = analysis.key_takeaways
-                article.new_tech_stacks = [
-                    t.model_dump() for t in analysis.new_tech_stack
-                ]
-                article.tags = analysis.tags
-                article.target_audience = analysis.target_audience
-                article.architectural_tradeoffs = (
-                    analysis.architectural_tradeoffs.model_dump()
-                    if analysis.architectural_tradeoffs
-                    else {}
-                )
-                article.nestjs_blueprint = (
-                    analysis.nestjs_blueprint.model_dump()
-                    if analysis.nestjs_blueprint
-                    else {}
-                )
-                article.learning_path = (
-                    analysis.learning_path.model_dump()
-                    if analysis.learning_path
-                    else {}
-                )
-                article.cluster_topic_key = analysis.cluster_topic_key
-                article.ai_model_used = model_used
-
-            # Story Clustering & Deduplication within 48h window
-            from app.services.clustering_service import assign_article_cluster
-
+        # Story clustering candidates (48h window), loaded once per source with only
+        # the columns assign_article_cluster needs
+        if prepared:
             since_time = datetime.now(timezone.utc) - timedelta(hours=48)
             recent_res = await db.execute(
-                select(Article).where(Article.created_at >= since_time)
+                select(Article)
+                .options(
+                    load_only(
+                        Article.id,
+                        Article.title,
+                        Article.vietnamese_title,
+                        Article.cluster_id,
+                        Article.cluster_topic_key,
+                        Article.relevance_score,
+                        Article.is_canonical,
+                    )
+                )
+                .where(Article.created_at >= since_time)
             )
-            recent_candidates = recent_res.scalars().all()
+            recent_candidates = list(recent_res.scalars().all())
 
+        for article in prepared:
             cluster_id, is_canonical, demoted_id = assign_article_cluster(
                 article, recent_candidates
             )
             article.cluster_id = cluster_id
             article.is_canonical = is_canonical
 
-            if demoted_id:
-                demoted_article = await db.get(Article, demoted_id)
-                if demoted_article:
-                    demoted_article.is_canonical = False
-
-            db.add(article)
-            await db.commit()  # Commit each article safely to generate article.id
-            articles_added += 1
-
-            # Generate and save embedding (Module 4)
             try:
-                from app.services.embedding_service import generate_article_embedding
-                embed_vec = await generate_article_embedding(article)
-                if embed_vec:
-                    article.embedding = embed_vec
-                    await db.commit()
-            except Exception as emb_err:
-                print(f"Embedding generation notice: {emb_err}")
+                async with db.begin_nested():
+                    db.add(article)
+                    # Set the relationship (not just source_id) so notifications can
+                    # read article.source without an async lazy load
+                    article.source = source
+            except IntegrityError:
+                # Same URL inserted concurrently by another source's crawl
+                logger.info(f"Skipping duplicate article {article.url}")
+                continue
+            if demoted_id:
+                for cand in recent_candidates:
+                    if cand.id == demoted_id:
+                        cand.is_canonical = False
+            await db.commit()
+            articles_added += 1
+            recent_candidates.append(article)
 
             # Smart & Urgent Telegram Notification Trigger (Module 3)
             try:
                 cluster_sources = []
-                if article.cluster_id:
-                    c_res = await db.execute(
-                        select(Article)
-                        .options(selectinload(Article.source))
-                        .where(Article.cluster_id == article.cluster_id)
-                    )
-                    c_articles = c_res.scalars().all()
-                    cluster_sources = [
-                        a.source.name for a in c_articles if a.source and a.source.name
-                    ]
+                relevance = article.relevance_score or 0.0
+                if 7.5 <= relevance < settings.TELEGRAM_ALERT_THRESHOLD:
+                    cluster_sources = await _cluster_source_names(db, article.cluster_id)
                 await trigger_smart_article_notifications(
                     article, cluster_sources=cluster_sources
                 )
             except Exception as noti_err:
-                print(f"Notification error: {noti_err}")
+                logger.error(f"Notification error for {article.url}: {noti_err}")
 
         # Update source health status
         source.status = "healthy"
         source.last_crawled_at = datetime.now(timezone.utc)
         source.last_error = None
         source.articles_count = (source.articles_count or 0) + articles_added
-        
+
         # Record successful CrawlRun
         duration_ms = int((time.time() - start_time) * 1000)
         crawl_run = CrawlRun(
-            source_id=source.id,
+            source_id=source_id,
             started_at=started_at,
             finished_at=datetime.now(timezone.utc),
             duration_ms=duration_ms,
@@ -211,7 +272,7 @@ async def crawl_single_source(
         duration_ms = int((time.time() - start_time) * 1000)
         error_message = str(e)
         logger.error(
-            f"Lỗi khi cào nguồn '{getattr(source, 'name', 'Unknown')}' (id={getattr(source, 'id', None)}): {error_message}"
+            f"Lỗi khi cào nguồn '{source_name}' (id={source_id}): {error_message}"
         )
         source.status = "error"
         source.last_error = error_message
@@ -222,7 +283,7 @@ async def crawl_single_source(
         
         # Record failed CrawlRun
         crawl_run = CrawlRun(
-            source_id=source.id,
+            source_id=source_id,
             started_at=started_at,
             finished_at=datetime.now(timezone.utc),
             duration_ms=duration_ms,
@@ -311,7 +372,20 @@ async def crawl_all_active_sources(
     """
     Crawls all active sources concurrently using asyncio.Semaphore for safe throughput.
     Uses separate database sessions per task to avoid concurrency conflicts with SQLAlchemy.
+    Skips the run entirely if another crawl-all is already in progress.
     """
+    if crawl_lock.locked():
+        logger.info("Crawl already in progress; skipping this run.")
+        return 0
+    async with crawl_lock:
+        return await _crawl_all_active_sources(
+            concurrency_limit, run_ai, progress_callback
+        )
+
+
+async def _crawl_all_active_sources(
+    concurrency_limit: int, run_ai: bool, progress_callback: Optional[Any]
+) -> int:
     from app.core.database import AsyncSessionLocal
 
     sem = asyncio.Semaphore(concurrency_limit)
@@ -324,7 +398,7 @@ async def crawl_all_active_sources(
             # Extract source IDs to process independently in concurrent sessions
             source_ids = [s.id for s in sources]
     except asyncio.CancelledError:
-        print("⚠️ [Crawl Service] Cào tin bị huỷ trong lúc lấy danh sách nguồn.")
+        logger.warning("⚠️ [Crawl Service] Cào tin bị huỷ trong lúc lấy danh sách nguồn.")
         raise
 
     async def crawl_worker(source_id: int) -> int:
@@ -341,7 +415,7 @@ async def crawl_all_active_sources(
                             else:
                                 progress_callback(f"Đang cào nguồn: {source.name}...")
                         except Exception as cb_err:
-                            print(f"Progress callback error: {cb_err}")
+                            logger.warning(f"Progress callback error: {cb_err}")
 
                     return await crawl_single_source(source, session, run_ai=run_ai)
                 except asyncio.CancelledError:
@@ -351,14 +425,14 @@ async def crawl_all_active_sources(
                         pass
                     raise
                 except Exception as err:
-                    print(f"Lỗi cào nguồn (id={source_id}): {err}")
+                    logger.error(f"Lỗi cào nguồn (id={source_id}): {err}")
                     return 0
 
     tasks = [asyncio.create_task(crawl_worker(s_id)) for s_id in source_ids]
     try:
         results = await asyncio.gather(*tasks, return_exceptions=True)
     except asyncio.CancelledError:
-        print("⚠️ [Crawl Service] Quá trình cào nhận tín hiệu huỷ. Đang dọn dẹp các task con an toàn...")
+        logger.warning("⚠️ [Crawl Service] Quá trình cào nhận tín hiệu huỷ. Đang dọn dẹp các task con an toàn...")
         for t in tasks:
             if not t.done():
                 t.cancel()
@@ -371,7 +445,7 @@ async def crawl_all_active_sources(
         elif isinstance(r, asyncio.CancelledError):
             pass
         elif isinstance(r, Exception):
-            print(f"Task exception in crawl_all_active_sources: {r}")
+            logger.error(f"Task exception in crawl_all_active_sources: {r}")
 
     return total_new_articles
 

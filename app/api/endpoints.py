@@ -1,10 +1,11 @@
 import asyncio
+import logging
 import re
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks, Body, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import desc, func
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import defer, selectinload
 from typing import List, Optional
 
 from app.core.database import get_db, AsyncSessionLocal
@@ -35,7 +36,11 @@ from app.crawlers.article_crawler import (
     fetch_hacker_news,
     extract_clean_article_content,
 )
-from app.services.crawl_service import crawl_single_source, crawl_all_active_sources
+from app.services.crawl_service import (
+    crawl_single_source,
+    crawl_all_active_sources,
+    estimate_reading_time,
+)
 from app.services.ai_analyzer import (
     analyze_article_with_9router,
     chat_with_article,
@@ -45,7 +50,16 @@ from app.services.ai_analyzer import (
 from app.services.circuit_breaker import ai_circuit_breaker
 from app.core.config import settings
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
+
+# Heavy columns that list/ranking endpoints never return; raiseload makes any
+# accidental access fail loudly instead of silently re-fetching per row
+LIGHT_ARTICLE_OPTIONS = (
+    defer(Article.raw_content, raiseload=True),
+    defer(Article.embedding, raiseload=True),
+)
 
 # Global crawl state
 crawl_status = {"is_crawling": False, "progress": "", "total_new_articles": 0}
@@ -181,20 +195,20 @@ async def trigger_crawl_source(
     if not source:
         raise HTTPException(status_code=404, detail="Không tìm thấy nguồn tin")
 
-    background_tasks.add_task(crawl_single_source, source, db, True)
+    background_tasks.add_task(run_crawl_source_task, source.id)
     return {"message": f"Đã kích hoạt cào nguồn '{source.name}' trong nền!"}
 
 
+async def run_crawl_source_task(source_id: int):
+    # The request's session is closed once the response is sent, so the
+    # background crawl opens its own
+    async with AsyncSessionLocal() as session:
+        source = await session.get(Source, source_id)
+        if source:
+            await crawl_single_source(source, session, True)
+
+
 # ----------------- ARTICLES ENDPOINTS -----------------
-
-
-def calculate_reading_time(text: Optional[str]) -> int:
-    if not text:
-        return 1
-    # Average reading speed ~ 200 words per minute
-    words = len(text.split())
-    minutes = max(1, round(words / 200))
-    return minutes
 
 
 @router.get("/articles", response_model=List[ArticleResponse])
@@ -209,12 +223,14 @@ async def list_articles(
     bookmarked_only: bool = False,
     include_hidden: bool = False,
     group_duplicates: bool = True,
-    limit: int = 50,
-    offset: int = 0,
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db),
 ):
     stmt = (
-        select(Article).options(selectinload(Article.source)).join(Source, isouter=True)
+        select(Article)
+        .options(selectinload(Article.source), *LIGHT_ARTICLE_OPTIONS)
+        .join(Source, isouter=True)
     )
 
     # Source filter
@@ -277,7 +293,7 @@ async def list_articles(
     if group_duplicates and cluster_ids:
         rel_stmt = (
             select(Article)
-            .options(selectinload(Article.source))
+            .options(selectinload(Article.source), *LIGHT_ARTICLE_OPTIONS)
             .where(
                 Article.cluster_id.in_(cluster_ids),
                 Article.is_canonical == False,
@@ -305,9 +321,6 @@ async def list_articles(
             resp.source_name = art.source.name
         if art.cluster_id and art.cluster_id in related_map:
             resp.related_articles = related_map[art.cluster_id]
-        # Estimate reading time from raw_content or summary
-        content_for_estimate = art.raw_content or art.vietnamese_summary or art.title
-        resp.reading_time_minutes = calculate_reading_time(content_for_estimate)
         output.append(resp)
 
     return output
@@ -341,10 +354,6 @@ async def update_article(
     resp = ArticleResponse.model_validate(article)
     if article.source:
         resp.source_name = article.source.name
-    content_for_estimate = (
-        article.raw_content or article.vietnamese_summary or article.title
-    )
-    resp.reading_time_minutes = calculate_reading_time(content_for_estimate)
     return resp
 
 
@@ -384,7 +393,7 @@ async def get_article_reader_content(
         else (article.raw_content or article.vietnamese_summary or article.title)
     )
 
-    reading_time = calculate_reading_time(final_content)
+    reading_time = estimate_reading_time(final_content)
 
     return ReaderModeResponse(
         id=article.id,
@@ -447,6 +456,9 @@ async def summarize_article_on_demand(
     if analysis.learning_path:
         article.learning_path = analysis.learning_path.model_dump()
     article.ai_model_used = model_used
+    article.reading_time_minutes = estimate_reading_time(
+        article.raw_content or article.vietnamese_summary or article.title
+    )
 
     await db.commit()
     await db.refresh(article)
@@ -454,9 +466,6 @@ async def summarize_article_on_demand(
     resp = ArticleResponse.model_validate(article)
     if article.source:
         resp.source_name = article.source.name
-    resp.reading_time_minutes = calculate_reading_time(
-        article.raw_content or article.vietnamese_summary or article.title
-    )
     return resp
 
 
@@ -751,12 +760,12 @@ async def chat_with_article_endpoint(
 @router.get("/articles/{article_id}/related", response_model=List[RelatedArticleItem])
 async def get_related_articles(
     article_id: int,
-    limit: int = 5,
+    limit: int = Query(5, ge=1, le=20),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
         select(Article)
-        .options(selectinload(Article.source))
+        .options(*LIGHT_ARTICLE_OPTIONS)
         .where(Article.id == article_id)
     )
     article = result.scalar_one_or_none()
@@ -776,7 +785,7 @@ async def get_related_articles(
     # Fetch candidate articles (not this article)
     candidates_result = await db.execute(
         select(Article)
-        .options(selectinload(Article.source))
+        .options(selectinload(Article.source), *LIGHT_ARTICLE_OPTIONS)
         .where(
             Article.id != article_id,
             (Article.is_hidden == False) | (Article.is_hidden.is_(None)),
@@ -844,7 +853,7 @@ async def get_weekly_radar_digest_endpoint(
     # Select top articles from the database
     result = await db.execute(
         select(Article)
-        .options(selectinload(Article.source))
+        .options(selectinload(Article.source), *LIGHT_ARTICLE_OPTIONS)
         .where(Article.is_hidden == False)
         .order_by(
             Article.relevance_score.desc(), Article.published_at.desc().nulls_last()
@@ -956,7 +965,7 @@ async def semantic_search_articles(
     topic: Optional[str] = None,
     source_id: Optional[int] = None,
     min_score: float = 0.0,
-    limit: int = 20,
+    limit: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -965,14 +974,18 @@ async def semantic_search_articles(
     """
     from app.services.embedding_service import generate_text_embedding
 
-    query_vec = await generate_text_embedding(query)
-    
+    # No hash-based fallback here: a pseudo-embedding of the query would rank
+    # results randomly, so go straight to keyword search when the gateway is down
+    query_vec = await generate_text_embedding(query, allow_fallback=False)
+
     try:
+        if query_vec is None:
+            raise RuntimeError("embedding gateway unavailable")
         # Try pgvector cosine distance
         distance_col = Article.embedding.cosine_distance(query_vec).label("distance")
         stmt = (
             select(Article, distance_col)
-            .options(selectinload(Article.source))
+            .options(selectinload(Article.source), *LIGHT_ARTICLE_OPTIONS)
             .where(
                 Article.embedding.isnot(None),
                 Article.is_hidden == False,
@@ -999,12 +1012,12 @@ async def semantic_search_articles(
             return results
 
     except Exception as vec_err:
-        print(f"pgvector query note (fallback to keyword search): {vec_err}")
+        logger.info(f"Vector search unavailable, using keyword search: {vec_err}")
 
     # Fallback to keyword matching
     stmt = (
         select(Article)
-        .options(selectinload(Article.source))
+        .options(selectinload(Article.source), *LIGHT_ARTICLE_OPTIONS)
         .where(
             Article.is_hidden == False,
             (
@@ -1033,7 +1046,7 @@ async def semantic_search_articles(
 @router.get("/articles/personalized", response_model=List[ArticleResponse])
 async def get_personalized_articles(
     user_id: str = "default_user",
-    limit: int = 30,
+    limit: int = Query(30, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
 ):
     from app.services.personalization_service import get_personalized_feed
@@ -1127,7 +1140,7 @@ async def telegram_webhook(
                     await answer_telegram_callback(cb_id, ack_text)
                     return {"ok": True, "action": action_type}
                 except Exception as err:
-                    print(f"Telegram webhook callback error: {err}")
+                    logger.error(f"Telegram webhook callback error: {err}")
 
     return {"ok": True}
 
@@ -1141,30 +1154,26 @@ async def get_admin_metrics(db: AsyncSession = Depends(get_db)):
     from sqlalchemy import func
     from app.schemas.schemas import SourceHealthMetric, CrawlRunResponse
 
-    # 1. Article stats
-    total_articles = (await db.execute(select(func.count(Article.id)))).scalar() or 0
-    analyzed_articles = (
-        await db.execute(select(func.count(Article.id)).where(Article.is_processed == True))
-    ).scalar() or 0
-    high_score_articles = (
-        await db.execute(select(func.count(Article.id)).where(Article.relevance_score >= 8.0))
-    ).scalar() or 0
+    # 1. Article stats (single scan with FILTER aggregates)
+    total_articles, analyzed_articles, high_score_articles = (
+        await db.execute(
+            select(
+                func.count(Article.id),
+                func.count(Article.id).filter(Article.is_processed == True),
+                func.count(Article.id).filter(Article.relevance_score >= 8.0),
+            )
+        )
+    ).one()
 
-    # 2. Source stats
-    total_sources = (await db.execute(select(func.count(Source.id)))).scalar() or 0
-    active_sources = (
-        await db.execute(select(func.count(Source.id)).where(Source.is_active == True))
-    ).scalar() or 0
-    healthy_sources = (
-        await db.execute(select(func.count(Source.id)).where(Source.status == "healthy"))
-    ).scalar() or 0
-    error_sources = (
-        await db.execute(select(func.count(Source.id)).where(Source.status == "error"))
-    ).scalar() or 0
-
-    # 3. Source health list
+    # 2. Source stats, computed from the source list we load anyway
     sources_res = await db.execute(select(Source).order_by(Source.id))
     sources = sources_res.scalars().all()
+    total_sources = len(sources)
+    active_sources = sum(1 for s in sources if s.is_active)
+    healthy_sources = sum(1 for s in sources if s.status == "healthy")
+    error_sources = sum(1 for s in sources if s.status == "error")
+
+    # 3. Source health list
     source_health_list = []
     for s in sources:
         source_health_list.append(

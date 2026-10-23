@@ -1,5 +1,7 @@
 import asyncio
+import logging
 from contextlib import asynccontextmanager
+from typing import Optional
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -9,7 +11,13 @@ from app.core.database import engine, Base, AsyncSessionLocal
 from app.models.models import Source
 from app.api.endpoints import router as api_router
 from app.services.crawl_service import crawl_single_source, crawl_all_active_sources
+from sqlalchemy import text
 from sqlalchemy.future import select
+
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+)
+logger = logging.getLogger(__name__)
 
 # Default authoritative sources (Global + Vietnam)
 DEFAULT_SOURCES = [
@@ -323,16 +331,155 @@ scheduler = AsyncIOScheduler()
 
 
 async def scheduled_crawl_job():
-    print("⏰ [Scheduler] Running background crawl cycle...")
+    logger.info("⏰ [Scheduler] Running background crawl cycle...")
     try:
         total = await crawl_all_active_sources(concurrency_limit=5, run_ai=True)
-        print(f"⏰ [Scheduler] Hoàn tất chu kỳ cào: đã thu thập {total} bài mới.")
+        logger.info(f"⏰ [Scheduler] Hoàn tất chu kỳ cào: đã thu thập {total} bài mới.")
     except asyncio.CancelledError:
-        print("⏰ [Scheduler] Scheduled crawl job đã được huỷ an toàn (CancelledError caught).")
+        logger.info("⏰ [Scheduler] Scheduled crawl job đã được huỷ an toàn (CancelledError caught).")
         return
     except Exception as e:
-        print(f"⏰ [Scheduler] Error during scheduled crawl: {e}")
+        logger.error(f"⏰ [Scheduler] Error during scheduled crawl: {e}")
 
+
+
+async def _try_ddl(conn, sql: str, label: str) -> bool:
+    """Run one DDL statement inside a savepoint. On Postgres a failed statement aborts
+    the enclosing transaction, so without the savepoint every later migration fails too."""
+    try:
+        async with conn.begin_nested():
+            await conn.execute(text(sql))
+        return True
+    except Exception as e:
+        logger.warning(f"Migration notice ({label}): {e}")
+        return False
+
+
+async def _column_type(conn, table: str, column: str) -> Optional[str]:
+    res = await conn.execute(
+        text(
+            "SELECT data_type FROM information_schema.columns "
+            "WHERE table_name = :t AND column_name = :c"
+        ),
+        {"t": table, "c": column},
+    )
+    return res.scalar()
+
+
+async def _run_schema_migrations(conn):
+    """Idempotent hand-written migrations (no Alembic). Add new model columns here."""
+    for col in ["is_read", "is_hidden", "is_bookmarked"]:
+        await _try_ddl(
+            conn,
+            f"ALTER TABLE articles ADD COLUMN IF NOT EXISTS {col} BOOLEAN DEFAULT FALSE",
+            col,
+        )
+
+    # Convert legacy timestamp columns to TIMESTAMPTZ. Only when needed: ALTER TYPE
+    # rewrites the whole table under an exclusive lock.
+    for table, col in [
+        ("articles", "published_at"),
+        ("articles", "created_at"),
+        ("sources", "last_crawled_at"),
+        ("sources", "created_at"),
+        ("sources", "updated_at"),
+    ]:
+        try:
+            current_type = await _column_type(conn, table, col)
+        except Exception as e:
+            logger.warning(f"Migration notice (type of {table}.{col}): {e}")
+            continue
+        if current_type == "timestamp without time zone":
+            await _try_ddl(
+                conn,
+                f"ALTER TABLE {table} ALTER COLUMN {col} TYPE TIMESTAMP WITH TIME ZONE "
+                f"USING {col} AT TIME ZONE 'UTC'",
+                f"{table}.{col} timestamptz",
+            )
+
+    for col in ["architectural_tradeoffs", "nestjs_blueprint", "learning_path"]:
+        await _try_ddl(
+            conn,
+            f"ALTER TABLE articles ADD COLUMN IF NOT EXISTS {col} JSON DEFAULT '{{}}'::json",
+            col,
+        )
+
+    # Story Clustering & Deduplication columns
+    await _try_ddl(conn, "ALTER TABLE articles ADD COLUMN IF NOT EXISTS cluster_id VARCHAR(100)", "cluster_id")
+    await _try_ddl(conn, "ALTER TABLE articles ADD COLUMN IF NOT EXISTS is_canonical BOOLEAN DEFAULT TRUE", "is_canonical")
+    await _try_ddl(conn, "ALTER TABLE articles ADD COLUMN IF NOT EXISTS cluster_topic_key VARCHAR(255)", "cluster_topic_key")
+    await _try_ddl(conn, "CREATE INDEX IF NOT EXISTS idx_articles_cluster_id ON articles(cluster_id)", "idx_articles_cluster_id")
+
+    # pgvector and embedding column
+    await _try_ddl(conn, "CREATE EXTENSION IF NOT EXISTS vector", "pgvector extension")
+    await _try_ddl(conn, "ALTER TABLE articles ADD COLUMN IF NOT EXISTS embedding vector(1536)", "embedding")
+    await _try_ddl(
+        conn,
+        "CREATE INDEX IF NOT EXISTS idx_articles_embedding ON articles USING hnsw (embedding vector_cosine_ops)",
+        "idx_articles_embedding",
+    )
+
+    # Precomputed reading time, so list endpoints don't need to load raw_content
+    if await _try_ddl(
+        conn,
+        "ALTER TABLE articles ADD COLUMN IF NOT EXISTS reading_time_minutes INTEGER",
+        "reading_time_minutes",
+    ):
+        await _try_ddl(
+            conn,
+            """UPDATE articles SET reading_time_minutes = GREATEST(1, ROUND(COALESCE(
+                   array_length(regexp_split_to_array(trim(
+                       COALESCE(NULLIF(raw_content, ''), NULLIF(vietnamese_summary, ''), title)
+                   ), '\\s+'), 1), 0) / 200.0))
+               WHERE reading_time_minutes IS NULL""",
+            "reading_time_minutes backfill",
+        )
+
+    # Indexes for the feed's filters and sort orders
+    await _try_ddl(
+        conn,
+        "CREATE INDEX IF NOT EXISTS idx_articles_feed_newest "
+        "ON articles (is_hidden, created_at DESC, id DESC)",
+        "idx_articles_feed_newest",
+    )
+    await _try_ddl(
+        conn,
+        "CREATE INDEX IF NOT EXISTS idx_articles_feed_score "
+        "ON articles (is_hidden, relevance_score DESC, created_at DESC)",
+        "idx_articles_feed_score",
+    )
+    await _try_ddl(
+        conn,
+        "CREATE INDEX IF NOT EXISTS idx_articles_source_id ON articles (source_id)",
+        "idx_articles_source_id",
+    )
+    await _try_ddl(
+        conn,
+        "CREATE INDEX IF NOT EXISTS idx_crawl_runs_source_started "
+        "ON crawl_runs (source_id, started_at DESC)",
+        "idx_crawl_runs_source_started",
+    )
+
+    # Trigram indexes so ILIKE '%q%' search can use an index instead of a full scan
+    if await _try_ddl(conn, "CREATE EXTENSION IF NOT EXISTS pg_trgm", "pg_trgm extension"):
+        for col in ["title", "vietnamese_title", "vietnamese_summary"]:
+            await _try_ddl(
+                conn,
+                f"CREATE INDEX IF NOT EXISTS idx_articles_{col}_trgm "
+                f"ON articles USING gin ({col} gin_trgm_ops)",
+                f"idx_articles_{col}_trgm",
+            )
+
+
+async def scheduled_embedding_backfill_job():
+    from app.services.embedding_service import backfill_missing_embeddings
+
+    try:
+        await backfill_missing_embeddings()
+    except asyncio.CancelledError:
+        return
+    except Exception as e:
+        logger.error(f"⏰ [Scheduler] Embedding backfill error: {e}")
 
 
 @asynccontextmanager
@@ -340,115 +487,7 @@ async def lifespan(app: FastAPI):
     # Initialize DB schema
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        # Migrate new columns if they do not exist
-        from sqlalchemy import text
-
-        for col in ["is_read", "is_hidden", "is_bookmarked"]:
-            try:
-                await conn.execute(
-                    text(
-                        f"ALTER TABLE articles ADD COLUMN IF NOT EXISTS {col} BOOLEAN DEFAULT FALSE"
-                    )
-                )
-            except Exception as e:
-                print(f"Migration notice for {col}: {e}")
-
-        # Auto-migrate timestamp columns to TIMESTAMP WITH TIME ZONE (TIMESTAMPTZ)
-        try:
-            await conn.execute(
-                text(
-                    "ALTER TABLE articles ALTER COLUMN published_at TYPE TIMESTAMP WITH TIME ZONE USING published_at AT TIME ZONE 'UTC'"
-                )
-            )
-            await conn.execute(
-                text(
-                    "ALTER TABLE articles ALTER COLUMN created_at TYPE TIMESTAMP WITH TIME ZONE USING created_at AT TIME ZONE 'UTC'"
-                )
-            )
-            await conn.execute(
-                text(
-                    "ALTER TABLE sources ALTER COLUMN last_crawled_at TYPE TIMESTAMP WITH TIME ZONE USING last_crawled_at AT TIME ZONE 'UTC'"
-                )
-            )
-            await conn.execute(
-                text(
-                    "ALTER TABLE sources ALTER COLUMN created_at TYPE TIMESTAMP WITH TIME ZONE USING created_at AT TIME ZONE 'UTC'"
-                )
-            )
-            await conn.execute(
-                text(
-                    "ALTER TABLE sources ALTER COLUMN updated_at TYPE TIMESTAMP WITH TIME ZONE USING updated_at AT TIME ZONE 'UTC'"
-                )
-            )
-        except Exception as e:
-            print(f"Timestamp migration notice: {e}")
-
-        # Auto-migrate deep AI columns (Postgres JSON or SQLite TEXT/JSON)
-        for col in ["architectural_tradeoffs", "nestjs_blueprint", "learning_path"]:
-            try:
-                await conn.execute(
-                    text(
-                        f"ALTER TABLE articles ADD COLUMN IF NOT EXISTS {col} JSON DEFAULT '{{}}'::json"
-                    )
-                )
-            except Exception:
-                try:
-                    await conn.execute(
-                        text(
-                            f"ALTER TABLE articles ADD COLUMN IF NOT EXISTS {col} JSON DEFAULT '{{}}'"
-                        )
-                    )
-                except Exception as e:
-                    print(f"Migration notice for {col}: {e}")
-
-        # Auto-migrate Story Clustering & Deduplication columns
-        try:
-            await conn.execute(
-                text(
-                    "ALTER TABLE articles ADD COLUMN IF NOT EXISTS cluster_id VARCHAR(100)"
-                )
-            )
-            await conn.execute(
-                text(
-                    "ALTER TABLE articles ADD COLUMN IF NOT EXISTS is_canonical BOOLEAN DEFAULT TRUE"
-                )
-            )
-            await conn.execute(
-                text(
-                    "ALTER TABLE articles ADD COLUMN IF NOT EXISTS cluster_topic_key VARCHAR(255)"
-                )
-            )
-            await conn.execute(
-                text(
-                    "CREATE INDEX IF NOT EXISTS idx_articles_cluster_id ON articles(cluster_id)"
-                )
-            )
-        except Exception as e:
-            print(f"Clustering migration notice: {e}")
-
-        # Auto-migrate pgvector and embedding column
-        try:
-            await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-        except Exception as e:
-            print(f"pgvector extension notice (may not have superuser or already active): {e}")
-
-        try:
-            await conn.execute(
-                text(
-                    "ALTER TABLE articles ADD COLUMN IF NOT EXISTS embedding vector(1536)"
-                )
-            )
-        except Exception as e:
-            print(f"Embedding column migration notice: {e}")
-
-        try:
-            await conn.execute(
-                text(
-                    "CREATE INDEX IF NOT EXISTS idx_articles_embedding ON articles USING hnsw (embedding vector_cosine_ops)"
-                )
-            )
-        except Exception as e:
-            print(f"Vector index notice: {e}")
+        await _run_schema_migrations(conn)
 
     # Sync and seed default sources if any are missing
     async with AsyncSessionLocal() as db:
@@ -472,13 +511,20 @@ async def lifespan(app: FastAPI):
 
         if new_sources_added > 0:
             await db.commit()
-            print(
+            logger.info(
                 f"🌱 Đã tự động đồng bộ thêm {new_sources_added} nguồn tin công nghệ mới vào cơ sở dữ liệu!"
             )
 
     # Start scheduler
     scheduler.add_job(
         scheduled_crawl_job, "interval", minutes=settings.CRAWL_INTERVAL_MINUTES
+    )
+    # Re-embed articles saved while the embedding gateway was unavailable
+    scheduler.add_job(
+        scheduled_embedding_backfill_job,
+        "interval",
+        minutes=settings.EMBEDDING_BACKFILL_INTERVAL_MINUTES,
+        id="embedding_backfill",
     )
 
     # Schedule Daily Espresso Briefings via Telegram
@@ -488,17 +534,17 @@ async def lifespan(app: FastAPI):
         try:
             await dispatch_daily_espresso_digest("☕ Morning Tech Espresso (8:00 AM)")
         except asyncio.CancelledError:
-            print("⏰ [Scheduler] Morning espresso cron cancelled safely.")
+            logger.info("⏰ [Scheduler] Morning espresso cron cancelled safely.")
         except Exception as e:
-            print(f"⏰ [Scheduler] Morning espresso error: {e}")
+            logger.error(f"⏰ [Scheduler] Morning espresso error: {e}")
 
     async def evening_briefing_cron():
         try:
             await dispatch_daily_espresso_digest("🌇 Evening Tech Briefing (18:00 PM)")
         except asyncio.CancelledError:
-            print("⏰ [Scheduler] Evening briefing cron cancelled safely.")
+            logger.info("⏰ [Scheduler] Evening briefing cron cancelled safely.")
         except Exception as e:
-            print(f"⏰ [Scheduler] Evening briefing error: {e}")
+            logger.error(f"⏰ [Scheduler] Evening briefing error: {e}")
 
     scheduler.add_job(
         morning_espresso_cron, "cron", hour=8, minute=0, id="morning_espresso"
@@ -508,27 +554,36 @@ async def lifespan(app: FastAPI):
     )
 
     scheduler.start()
-    print(
+    logger.info(
         f"🚀 Scheduler started: Running crawl every {settings.CRAWL_INTERVAL_MINUTES} minutes, Espresso briefings at 08:00 & 18:00."
     )
 
     yield
 
     # Graceful shutdown of scheduler and database connection pool
-    print("🛑 [Lifespan] Shutting down scheduler...")
+    logger.info("🛑 [Lifespan] Shutting down scheduler...")
     try:
         if scheduler.running:
             scheduler.shutdown(wait=False)
-            print("🛑 [Lifespan] Scheduler stopped successfully.")
+            logger.info("🛑 [Lifespan] Scheduler stopped successfully.")
     except Exception as e:
-        print(f"🛑 [Lifespan] Error shutting down scheduler: {e}")
+        logger.error(f"🛑 [Lifespan] Error shutting down scheduler: {e}")
 
     try:
-        print("🛑 [Lifespan] Disposing database connection pool...")
-        await engine.dispose()
-        print("🛑 [Lifespan] Database connection pool disposed successfully.")
+        from app.crawlers.article_crawler import close_http_client
+        from app.services.ai_analyzer import close_ai_clients
+
+        await close_http_client()
+        await close_ai_clients()
     except Exception as e:
-        print(f"🛑 [Lifespan] Error disposing database engine: {e}")
+        logger.error(f"🛑 [Lifespan] Error closing HTTP clients: {e}")
+
+    try:
+        logger.info("🛑 [Lifespan] Disposing database connection pool...")
+        await engine.dispose()
+        logger.info("🛑 [Lifespan] Database connection pool disposed successfully.")
+    except Exception as e:
+        logger.error(f"🛑 [Lifespan] Error disposing database engine: {e}")
 
 
 app = FastAPI(

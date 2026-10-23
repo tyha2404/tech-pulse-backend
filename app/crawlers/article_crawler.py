@@ -13,6 +13,26 @@ headers = {
 }
 
 
+_http_client: httpx.AsyncClient | None = None
+
+
+def get_http_client() -> httpx.AsyncClient:
+    """Shared client so feed and article fetches reuse pooled connections."""
+    global _http_client
+    if _http_client is None or _http_client.is_closed:
+        _http_client = httpx.AsyncClient(
+            timeout=10.0, follow_redirects=True, headers=headers
+        )
+    return _http_client
+
+
+async def close_http_client():
+    global _http_client
+    if _http_client is not None:
+        await _http_client.aclose()
+        _http_client = None
+
+
 def make_tz_aware(dt: datetime | None) -> datetime | None:
     """Ensure datetime is offset-aware UTC for TIMESTAMP WITH TIME ZONE"""
     if dt is None:
@@ -23,12 +43,9 @@ def make_tz_aware(dt: datetime | None) -> datetime | None:
 
 
 async def fetch_rss_feed(feed_url: str) -> list[dict]:
-    async with httpx.AsyncClient(
-        timeout=10.0, follow_redirects=True, headers=headers
-    ) as client:
-        resp = await client.get(feed_url)
-        resp.raise_for_status()
-        content = resp.text
+    resp = await get_http_client().get(feed_url)
+    resp.raise_for_status()
+    content = resp.text
 
     parsed = feedparser.parse(content)
     if parsed.bozo and not parsed.entries:
@@ -72,12 +89,9 @@ async def fetch_rss_feed(feed_url: str) -> list[dict]:
 
 async def fetch_json_feed(feed_url: str) -> list[dict]:
     """Parse JSON Feed specification (RFC: version, items)"""
-    async with httpx.AsyncClient(
-        timeout=10.0, follow_redirects=True, headers=headers
-    ) as client:
-        resp = await client.get(feed_url)
-        resp.raise_for_status()
-        data = resp.json()
+    resp = await get_http_client().get(feed_url)
+    resp.raise_for_status()
+    data = resp.json()
 
     items = []
     raw_items = data.get("items", []) if isinstance(data, dict) else []
@@ -113,12 +127,9 @@ async def fetch_json_feed(feed_url: str) -> list[dict]:
 
 async def fetch_sitemap_feed(sitemap_url: str) -> list[dict]:
     """Parse sitemap.xml or sitemapindex.xml to extract recent article URLs"""
-    async with httpx.AsyncClient(
-        timeout=10.0, follow_redirects=True, headers=headers
-    ) as client:
-        resp = await client.get(sitemap_url)
-        resp.raise_for_status()
-        xml_text = resp.text
+    resp = await get_http_client().get(sitemap_url)
+    resp.raise_for_status()
+    xml_text = resp.text
 
     soup = BeautifulSoup(xml_text, "html.parser")
     items = []
@@ -164,58 +175,57 @@ async def fetch_sitemap_feed(sitemap_url: str) -> list[dict]:
 
 
 async def fetch_hacker_news() -> list[dict]:
-    async with httpx.AsyncClient(timeout=8.0, headers=headers) as client:
-        resp = await client.get(
-            "https://hn.algolia.com/api/v1/search?tags=front_page&hitsPerPage=15"
+    resp = await get_http_client().get(
+        "https://hn.algolia.com/api/v1/search?tags=front_page&hitsPerPage=15",
+        timeout=8.0,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+
+    items = []
+    for hit in data.get("hits", []):
+        url = (
+            hit.get("url")
+            or f"https://news.ycombinator.com/item?id={hit.get('objectID')}"
         )
-        resp.raise_for_status()
-        data = resp.json()
 
-        items = []
-        for hit in data.get("hits", []):
-            url = (
-                hit.get("url")
-                or f"https://news.ycombinator.com/item?id={hit.get('objectID')}"
-            )
+        raw_dt = None
+        if hit.get("created_at"):
+            try:
+                raw_dt = datetime.fromisoformat(
+                    hit["created_at"].replace("Z", "+00:00")
+                )
+            except Exception:
+                pass
 
-            raw_dt = None
-            if hit.get("created_at"):
-                try:
-                    raw_dt = datetime.fromisoformat(
-                        hit["created_at"].replace("Z", "+00:00")
-                    )
-                except Exception:
-                    pass
-
-            items.append(
-                {
-                    "title": hit.get("title", ""),
-                    "url": url,
-                    "author": hit.get("author"),
-                    "published_at": make_tz_aware(raw_dt) or datetime.now(timezone.utc),
-                    "raw_content": hit.get("story_text", "") or hit.get("title", ""),
-                }
-            )
-        return items
+        items.append(
+            {
+                "title": hit.get("title", ""),
+                "url": url,
+                "author": hit.get("author"),
+                "published_at": make_tz_aware(raw_dt) or datetime.now(timezone.utc),
+                "raw_content": hit.get("story_text", "") or hit.get("title", ""),
+            }
+        )
+    return items
 
 
 async def extract_clean_article_content(
     article_url: str, max_length: int = 4000, output_format: str = "txt"
 ) -> str:
     try:
-        async with httpx.AsyncClient(
-            timeout=10.0, follow_redirects=True, headers=headers
-        ) as client:
-            resp = await client.get(article_url)
-            if resp.status_code == 200:
-                extracted = trafilatura.extract(
-                    resp.text,
-                    include_links=True,
-                    include_images=False,
-                    output_format=output_format,
-                )
-                if extracted:
-                    return extracted[:max_length]
+        resp = await get_http_client().get(article_url)
+        if resp.status_code == 200:
+            # trafilatura is CPU-bound; keep it off the event loop
+            extracted = await asyncio.to_thread(
+                trafilatura.extract,
+                resp.text,
+                include_links=True,
+                include_images=False,
+                output_format=output_format,
+            )
+            if extracted:
+                return extracted[:max_length]
     except Exception:
         pass
     return ""

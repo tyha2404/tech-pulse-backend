@@ -77,6 +77,7 @@ class Article(Base):
     author = Column(String(255), nullable=True)
     published_at = Column(DateTime(timezone=True), nullable=True)
     raw_content = Column(Text, nullable=True)
+    reading_time_minutes = Column(Integer, nullable=True, default=1)
 
     # AI Analysis Output via 9routers
     is_processed = Column(Boolean, default=False)

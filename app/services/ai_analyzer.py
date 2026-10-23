@@ -1,10 +1,34 @@
 import json
+import logging
 import re
 from typing import Tuple, List, Optional
 from openai import AsyncOpenAI
 from app.core.config import settings
 from app.schemas.schemas import AIAnalysisResult
 from app.services.circuit_breaker import ai_circuit_breaker
+
+logger = logging.getLogger(__name__)
+
+# One client per timeout so the underlying HTTP connection pool is reused across calls
+_ai_clients: dict = {}
+
+
+def get_ai_client(timeout: float) -> AsyncOpenAI:
+    client = _ai_clients.get(timeout)
+    if client is None:
+        client = AsyncOpenAI(
+            base_url=settings.NINEROUTERS_BASE_URL,
+            api_key=settings.NINEROUTERS_API_KEY,
+            timeout=timeout,
+        )
+        _ai_clients[timeout] = client
+    return client
+
+
+async def close_ai_clients():
+    for client in _ai_clients.values():
+        await client.close()
+    _ai_clients.clear()
 
 BASE_SYSTEM_PROMPT = """You are a Principal Backend & AI Systems Engineer, specializing in NestJS, TypeScript, Microservices, Distributed Systems, and AI Infrastructure (LLMs, Vector DBs, RAG, Agentic Workflows).
 Your task is to analyze the provided technical article and output an in-depth, production-oriented evaluation for software engineers.
@@ -135,11 +159,7 @@ async def analyze_article_with_9router(
     Multi-model AI analysis with Circuit Breaker and Failover Chain:
     Gemini 2.5 Flash -> Claude 3.5 Haiku -> GPT-4o-mini -> Extractive Fallback
     """
-    client = AsyncOpenAI(
-        base_url=settings.NINEROUTERS_BASE_URL,
-        api_key=settings.NINEROUTERS_API_KEY,
-        timeout=settings.AI_TIMEOUT_BACKGROUND,
-    )
+    client = get_ai_client(settings.AI_TIMEOUT_BACKGROUND)
 
     truncated_content = content[:3000] if content else title
     system_prompt = _build_calibrated_system_prompt(few_shot_examples)
@@ -159,7 +179,7 @@ Analyze the article according to your system instructions. Output ONLY the requi
 
     for model_name in models_to_try:
         if not ai_circuit_breaker.can_execute(model_name):
-            print(f"⚡ Circuit Breaker OPEN for {model_name}. Skipping to next fallback...")
+            logger.info(f"⚡ Circuit Breaker OPEN for {model_name}. Skipping to next fallback...")
             continue
 
         try:
@@ -181,11 +201,11 @@ Analyze the article according to your system instructions. Output ONLY the requi
         except Exception as err:
             ai_circuit_breaker.record_failure(model_name)
             last_exception = err
-            print(f"⚠️ Model {model_name} failed ({err}). Triggering failover...")
+            logger.warning(f"⚠️ Model {model_name} failed ({err}). Triggering failover...")
             continue
 
     # All AI providers failed or circuit open -> Extractive Heuristic Fallback
-    print(f"🚨 All AI models in failover chain exhausted ({last_exception}). Using Extractive Fallback.")
+    logger.error(f"🚨 All AI models in failover chain exhausted ({last_exception}). Using Extractive Fallback.")
     fallback_res = extractive_heuristic_fallback(title, content, url)
     return fallback_res, "extractive-fallback"
 
@@ -197,11 +217,7 @@ async def chat_with_article(
     history: list = None,
 ) -> dict:
     """Multi-turn technical Q&A with Senior NestJS & AI Architect persona."""
-    client = AsyncOpenAI(
-        base_url=settings.NINEROUTERS_BASE_URL,
-        api_key=settings.NINEROUTERS_API_KEY,
-        timeout=settings.AI_TIMEOUT_INTERACTIVE,
-    )
+    client = get_ai_client(settings.AI_TIMEOUT_INTERACTIVE)
 
     system_instruction = f"""You are a Principal Backend Engineer & AI Systems Architect, specialized in NestJS, TypeScript, Microservices, RAG, and AI Engineering.
 You are assisting a software engineer in discussing and deep-diving into the following technical article:
@@ -282,11 +298,7 @@ FOLLOW_UPS:
 
 async def generate_weekly_radar_digest(top_articles: list) -> dict:
     """Synthesize cross-article insights into a weekly tech radar intelligence report."""
-    client = AsyncOpenAI(
-        base_url=settings.NINEROUTERS_BASE_URL,
-        api_key=settings.NINEROUTERS_API_KEY,
-        timeout=settings.AI_TIMEOUT_BACKGROUND,
-    )
+    client = get_ai_client(settings.AI_TIMEOUT_BACKGROUND)
 
     articles_summary = []
     for a in top_articles[:15]:
@@ -396,11 +408,7 @@ async def generate_blueprint_on_demand(
     vietnamese_summary: Optional[str] = None,
 ) -> dict:
     """Generate on-demand NestJS code blueprint and architectural pattern for an article."""
-    client = AsyncOpenAI(
-        base_url=settings.NINEROUTERS_BASE_URL,
-        api_key=settings.NINEROUTERS_API_KEY,
-        timeout=settings.AI_TIMEOUT_BACKGROUND,
-    )
+    client = get_ai_client(settings.AI_TIMEOUT_BACKGROUND)
 
 
     truncated_content = article_content[:4000] if article_content else article_title

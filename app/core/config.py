@@ -41,9 +41,14 @@ class Settings(BaseSettings):
     # AI Request Timeouts (Interactive/Chat vs Background/Crawl/Blueprint)
     AI_TIMEOUT_INTERACTIVE: float = float(os.getenv("AI_TIMEOUT_INTERACTIVE", "30.0"))
     AI_TIMEOUT_BACKGROUND: float = float(os.getenv("AI_TIMEOUT_BACKGROUND", "60.0"))
+    # Max articles fetched + analyzed in parallel across all sources during a crawl
+    AI_MAX_CONCURRENCY: int = int(os.getenv("AI_MAX_CONCURRENCY", "8"))
 
     # Scheduler
     CRAWL_INTERVAL_MINUTES: int = int(os.getenv("CRAWL_INTERVAL_MINUTES", "60"))
+    EMBEDDING_BACKFILL_INTERVAL_MINUTES: int = int(
+        os.getenv("EMBEDDING_BACKFILL_INTERVAL_MINUTES", "30")
+    )
 
     # Webhooks & Urgent Alerts
     TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
