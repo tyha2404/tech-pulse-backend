@@ -231,7 +231,10 @@ async def crawl_single_source(
             try:
                 cluster_sources = []
                 relevance = article.relevance_score or 0.0
-                if 7.5 <= relevance < settings.TELEGRAM_ALERT_THRESHOLD:
+                if (
+                    settings.TELEGRAM_INSTANT_MODE == "all"
+                    and 7.5 <= relevance < settings.TELEGRAM_ALERT_THRESHOLD
+                ):
                     cluster_sources = await _cluster_source_names(db, article.cluster_id)
                 await trigger_smart_article_notifications(
                     article, cluster_sources=cluster_sources
@@ -322,6 +325,11 @@ async def trigger_smart_article_notifications(
     # Module 3: Real-time Urgent Alert for score >= 9.0
     if relevance >= settings.TELEGRAM_ALERT_THRESHOLD:
         await send_urgent_alert(article)
+        return
+
+    # In "urgent_only" mode everything below the urgent threshold waits for the
+    # end-of-day briefing instead of pushing one message per article
+    if settings.TELEGRAM_INSTANT_MODE != "all":
         return
 
     # Normal smart alert for score >= 7.5

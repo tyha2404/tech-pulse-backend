@@ -56,6 +56,7 @@ async def test_crawl_dedupes_and_notifies_with_source_name(session):
     with patch.object(crawl_service, "fetch_rss_feed", AsyncMock(return_value=items)), \
          patch.object(crawl_service, "analyze_article_with_9router", side_effect=_fake_analysis), \
          patch.object(crawl_service, "generate_article_embedding", AsyncMock(return_value=None)), \
+         patch.object(crawl_service.settings, "TELEGRAM_INSTANT_MODE", "all"), \
          patch("app.services.telegram_service.send_telegram_message", new_callable=AsyncMock) as mock_send:
         added = await crawl_service.crawl_single_source(source, session, run_ai=True)
 

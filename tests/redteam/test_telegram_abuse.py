@@ -13,13 +13,14 @@ def test_telegram_urgent_alert_rate_limiting_defense():
     """
     Red Team test: Attacker pushes 50 high-urgency breaking articles within seconds
     to spam and exhaust Telegram notifications.
-    Ensure rate-limiter clamps down and strictly blocks excess messages beyond TELEGRAM_ALERT_MAX_PER_HOUR.
+    Ensure rate-limiter clamps down and strictly blocks excess messages beyond the hourly/daily caps.
     """
     # Reset in-memory rate-limiter state
     import app.services.telegram_service as ts
     ts._urgent_alert_timestamps = []
 
-    max_allowed = settings.TELEGRAM_ALERT_MAX_PER_HOUR
+    # Both the hourly and the rolling 24h cap apply; the tighter one wins
+    max_allowed = min(settings.TELEGRAM_ALERT_MAX_PER_HOUR, settings.TELEGRAM_ALERT_MAX_PER_DAY)
     allowed_count = 0
     blocked_count = 0
 

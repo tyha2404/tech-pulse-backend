@@ -905,20 +905,24 @@ async def get_weekly_radar_digest_endpoint(
 @router.post("/intelligence/dispatch-digest")
 async def dispatch_digest_to_webhook(
     channel: str = Query("all", pattern="^(all|telegram|discord)$"),
-    db: AsyncSession = Depends(get_db),
 ):
-    """Optionally dispatch weekly radar digest to Telegram or Discord if configured."""
-    # Placeholder for webhook notification with status check
-    configured_channels = []
-    if settings.TELEGRAM_BOT_TOKEN and settings.TELEGRAM_CHAT_ID:
-        configured_channels.append("telegram")
-    if settings.DISCORD_WEBHOOK_URL:
-        configured_channels.append("discord")
+    """Send the end-of-day briefing (last 24h) to Telegram now. Discord is not implemented."""
+    from app.services.daily_briefing import dispatch_daily_briefing
 
+    if not (settings.TELEGRAM_BOT_TOKEN and settings.TELEGRAM_CHAT_ID):
+        return {
+            "success": False,
+            "message": "Chưa cấu hình TELEGRAM_BOT_TOKEN và TELEGRAM_CHAT_ID trong backend/.env.",
+        }
+    if channel == "discord":
+        return {"success": False, "message": "Gửi bản tin qua Discord chưa được hỗ trợ."}
+
+    sent = await dispatch_daily_briefing()
     return {
-        "success": True,
-        "message": f"Đã chuẩn bị bản tin radar cho kênh: {channel}",
-        "configured_channels": configured_channels,
+        "success": sent,
+        "message": "Đã gửi bản tin 24 giờ qua tới Telegram."
+        if sent
+        else "Telegram từ chối tin nhắn. Xem log backend để biết lý do.",
     }
 
 
@@ -1109,12 +1113,26 @@ async def update_user_prefs(
 
 @router.post("/webhooks/telegram")
 async def telegram_webhook(
+    background_tasks: BackgroundTasks,
     update: dict = Body(...),
     db: AsyncSession = Depends(get_db),
 ):
-    """Handle Telegram bot webhook events (inline callback query 👍 / 👎 / 🔖)"""
+    """Handle Telegram bot webhook events: inline callbacks (👍 / 👎 / 🔖) and the
+    /tomtat command, which sends the briefing for the last 24h on demand."""
     from app.services.telegram_service import answer_telegram_callback
     from app.services.feedback_service import record_article_feedback
+
+    message = update.get("message") or {}
+    text = (message.get("text") or "").strip()
+    if text.split("@")[0].split(" ")[0] in ("/tomtat", "/briefing"):
+        # Only the configured chat may trigger it, so strangers can't burn LLM calls
+        if str(message.get("chat", {}).get("id")) == str(settings.TELEGRAM_CHAT_ID):
+            from app.services.daily_briefing import dispatch_daily_briefing
+
+            # LLM synthesis can take longer than Telegram waits for a webhook reply
+            background_tasks.add_task(dispatch_daily_briefing)
+            return {"ok": True, "action": "briefing"}
+        return {"ok": True}
 
     callback_query = update.get("callback_query")
     if callback_query:

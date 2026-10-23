@@ -527,35 +527,75 @@ async def lifespan(app: FastAPI):
         id="embedding_backfill",
     )
 
-    # Schedule Daily Espresso Briefings via Telegram
+    # Telegram digests. Cron times are pinned to BRIEFING_TIMEZONE so they don't
+    # drift when the server (e.g. a Docker container) runs in UTC.
     from app.services.telegram_service import dispatch_daily_espresso_digest
+    from app.services.daily_briefing import dispatch_daily_briefing, dispatch_scheduled_update
 
-    async def morning_espresso_cron():
+    async def briefing_update_cron():
         try:
-            await dispatch_daily_espresso_digest("☕ Morning Tech Espresso (8:00 AM)")
+            await dispatch_scheduled_update()
         except asyncio.CancelledError:
-            logger.info("⏰ [Scheduler] Morning espresso cron cancelled safely.")
+            logger.info("⏰ [Scheduler] Briefing update cron cancelled safely.")
         except Exception as e:
-            logger.error(f"⏰ [Scheduler] Morning espresso error: {e}")
+            logger.error(f"⏰ [Scheduler] Briefing update error: {e}")
 
-    async def evening_briefing_cron():
+    update_hours = settings.briefing_update_hours_list
+    if update_hours:
+        scheduler.add_job(
+            briefing_update_cron,
+            "cron",
+            hour=",".join(str(h) for h in update_hours),
+            minute=0,
+            timezone=settings.BRIEFING_TIMEZONE,
+            id="briefing_update",
+        )
+
+    async def daily_briefing_cron():
         try:
-            await dispatch_daily_espresso_digest("🌇 Evening Tech Briefing (18:00 PM)")
+            await dispatch_daily_briefing()
         except asyncio.CancelledError:
-            logger.info("⏰ [Scheduler] Evening briefing cron cancelled safely.")
+            logger.info("⏰ [Scheduler] Daily briefing cron cancelled safely.")
         except Exception as e:
-            logger.error(f"⏰ [Scheduler] Evening briefing error: {e}")
+            logger.error(f"⏰ [Scheduler] Daily briefing error: {e}")
 
     scheduler.add_job(
-        morning_espresso_cron, "cron", hour=8, minute=0, id="morning_espresso"
+        daily_briefing_cron,
+        "cron",
+        hour=settings.DAILY_BRIEFING_HOUR,
+        minute=settings.DAILY_BRIEFING_MINUTE,
+        timezone=settings.BRIEFING_TIMEZONE,
+        id="daily_briefing",
     )
-    scheduler.add_job(
-        evening_briefing_cron, "cron", hour=18, minute=0, id="evening_briefing"
+    schedule_note = (
+        f"briefing updates at {', '.join(f'{h:02d}:00' for h in update_hours) or 'none'}, "
+        f"super summary at {settings.DAILY_BRIEFING_HOUR:02d}:{settings.DAILY_BRIEFING_MINUTE:02d}"
     )
+
+    if settings.MORNING_ESPRESSO_ENABLED:
+
+        async def morning_espresso_cron():
+            try:
+                await dispatch_daily_espresso_digest("☕ Morning Tech Espresso (8:00 AM)")
+            except asyncio.CancelledError:
+                logger.info("⏰ [Scheduler] Morning espresso cron cancelled safely.")
+            except Exception as e:
+                logger.error(f"⏰ [Scheduler] Morning espresso error: {e}")
+
+        scheduler.add_job(
+            morning_espresso_cron,
+            "cron",
+            hour=8,
+            minute=0,
+            timezone=settings.BRIEFING_TIMEZONE,
+            id="morning_espresso",
+        )
+        schedule_note += ", morning espresso at 08:00"
 
     scheduler.start()
     logger.info(
-        f"🚀 Scheduler started: Running crawl every {settings.CRAWL_INTERVAL_MINUTES} minutes, Espresso briefings at 08:00 & 18:00."
+        f"🚀 Scheduler started: crawl every {settings.CRAWL_INTERVAL_MINUTES} minutes, "
+        f"{schedule_note} ({settings.BRIEFING_TIMEZONE}), Telegram instant mode={settings.TELEGRAM_INSTANT_MODE}."
     )
 
     yield

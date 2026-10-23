@@ -59,6 +59,18 @@ class Settings(BaseSettings):
     TELEGRAM_ALERT_MAX_PER_HOUR: int = int(
         os.getenv("TELEGRAM_ALERT_MAX_PER_HOUR", "5")
     )
+    # Instant pushes during the day: "urgent_only" (score >= TELEGRAM_ALERT_THRESHOLD only)
+    # or "all" (also elite >= 7.5 and multi-source cluster alerts)
+    TELEGRAM_INSTANT_MODE: str = os.getenv("TELEGRAM_INSTANT_MODE", "urgent_only")
+    TELEGRAM_ALERT_MAX_PER_DAY: int = int(os.getenv("TELEGRAM_ALERT_MAX_PER_DAY", "3"))
+
+    # End-of-day AI briefing (one Telegram message summarizing the last 24h)
+    BRIEFING_TIMEZONE: str = os.getenv("BRIEFING_TIMEZONE", "Asia/Ho_Chi_Minh")
+    DAILY_BRIEFING_HOUR: int = int(os.getenv("DAILY_BRIEFING_HOUR", "22"))
+    DAILY_BRIEFING_MINUTE: int = int(os.getenv("DAILY_BRIEFING_MINUTE", "0"))
+    # Short "what's new since the last briefing" updates; comma-separated hours
+    BRIEFING_UPDATE_HOURS: str = os.getenv("BRIEFING_UPDATE_HOURS", "9,12,18")
+    MORNING_ESPRESSO_ENABLED: bool = os.getenv("MORNING_ESPRESSO_ENABLED", "false").lower() in ("true", "1", "yes")
     DISCORD_WEBHOOK_URL: str = os.getenv("DISCORD_WEBHOOK_URL", "")
     FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://127.0.0.1:5174")
 
@@ -71,6 +83,15 @@ class Settings(BaseSettings):
             if m not in models:
                 models.append(m)
         return models
+
+    @property
+    def briefing_update_hours_list(self) -> list[int]:
+        hours = []
+        for h in self.BRIEFING_UPDATE_HOURS.split(","):
+            h = h.strip()
+            if h.isdigit() and 0 <= int(h) <= 23 and int(h) != self.DAILY_BRIEFING_HOUR:
+                hours.append(int(h))
+        return sorted(set(hours))
 
     @property
     def DATABASE_URL(self) -> str:

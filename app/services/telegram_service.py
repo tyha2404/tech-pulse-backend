@@ -20,13 +20,15 @@ def escape_html(text: Optional[str]) -> str:
 
 
 def _check_urgent_rate_limit() -> bool:
-    """Returns True if within rate limit, False if throttled"""
+    """Returns True if within both the hourly and the rolling 24h limit, False if throttled.
+    In-memory, so the window resets when the backend restarts."""
     global _urgent_alert_timestamps
     now = time.time()
-    one_hour_ago = now - 3600.0
-    # Clean up older than 1 hour
-    _urgent_alert_timestamps = [t for t in _urgent_alert_timestamps if t > one_hour_ago]
-    if len(_urgent_alert_timestamps) >= settings.TELEGRAM_ALERT_MAX_PER_HOUR:
+    _urgent_alert_timestamps = [t for t in _urgent_alert_timestamps if t > now - 86400.0]
+    last_hour = [t for t in _urgent_alert_timestamps if t > now - 3600.0]
+    if len(last_hour) >= settings.TELEGRAM_ALERT_MAX_PER_HOUR:
+        return False
+    if len(_urgent_alert_timestamps) >= settings.TELEGRAM_ALERT_MAX_PER_DAY:
         return False
     _urgent_alert_timestamps.append(now)
     return True
@@ -236,6 +238,7 @@ async def send_telegram_message(
     html_text: str,
     reply_markup: Optional[Dict[str, Any]] = None,
     timeout: float = 6.0,
+    disable_preview: bool = False,
 ) -> bool:
     bot_token = settings.TELEGRAM_BOT_TOKEN
     chat_id = settings.TELEGRAM_CHAT_ID
@@ -247,7 +250,7 @@ async def send_telegram_message(
         "chat_id": chat_id,
         "text": html_text,
         "parse_mode": "HTML",
-        "disable_web_page_preview": False,
+        "disable_web_page_preview": disable_preview,
     }
     if reply_markup:
         payload["reply_markup"] = _sanitize_reply_markup_urls(reply_markup)
@@ -298,7 +301,7 @@ async def dispatch_daily_espresso_digest(
     from app.core.database import AsyncSessionLocal
     from app.models.models import Article
 
-    since = datetime.datetime.utcnow() - datetime.timedelta(hours=24)
+    since = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=24)
     async with AsyncSessionLocal() as db:
         stmt = (
             select(Article)
