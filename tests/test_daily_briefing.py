@@ -226,10 +226,10 @@ def test_update_message_header_and_trend_only_in_daily():
     upd, _ = format_daily_briefing_message({**briefing, "trend": ""}, articles, now=now, kind=UPDATE, since=since)
     assert "Cập nhật 12:00 · Thứ sáu 23/10" in upd
     assert "2 bài mới từ 09:00" in upd
-    assert "Có gì mới" in upd and "Xu hướng của ngày" not in upd
+    assert "CÓ GÌ MỚI" in upd and "XU HƯỚNG CỦA NGÀY" not in upd
 
     daily, _ = format_daily_briefing_message(briefing, articles, now=now, kind=DAILY)
-    assert "Xu hướng của ngày" in daily and "Xu hướng lớn" in daily
+    assert "XU HƯỚNG CỦA NGÀY" in daily and "Xu hướng lớn" in daily
 
 
 @pytest.mark.asyncio

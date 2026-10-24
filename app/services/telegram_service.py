@@ -34,8 +34,21 @@ def _check_urgent_rate_limit() -> bool:
     return True
 
 
+def score_dot(score: float) -> str:
+    """Colored dot matching the app's score tiers: signal (high), ochre (mid), neutral."""
+    if score >= 8.5:
+        return "🟢"
+    if score >= 7.0:
+        return "🟡"
+    return "⚪"
+
+
+NUMERALS = ["①", "②", "③", "④", "⑤"]
+
+
 def format_urgent_alert_message(article: Any) -> Tuple[str, Dict[str, Any]]:
-    """Format real-time urgent push for score >= 9.0 with inline feedback buttons"""
+    """Format real-time urgent push for score >= 9.0 with inline feedback buttons.
+    Meant to be sent with the article's link preview shown above the text."""
     article_id = getattr(article, "id", None)
     title = escape_html(
         getattr(article, "vietnamese_title", None)
@@ -52,34 +65,36 @@ def format_urgent_alert_message(article: Any) -> Tuple[str, Dict[str, Any]]:
         or ""
     )
     url = getattr(article, "url", FRONTEND_URL)
+    reading_time = getattr(article, "reading_time_minutes", None)
     takeaways = getattr(article, "key_takeaways", []) or []
     tech_stacks = getattr(article, "new_tech_stacks", []) or []
     tags = getattr(article, "tags", []) or []
 
+    meta = source_name + (f" · {reading_time} phút đọc" if reading_time else "")
     lines = [
-        f"🚨 <b>[TECHPULSE BREAKING / MUST READ] ⭐ {score:.1f}/10</b>",
+        f"🔴 <b>TIN NÓNG</b> · <b>{score:.1f}</b>/10",
         "",
-        f"📌 <b>{title}</b>",
-        f"🌐 <i>Nguồn: {source_name}</i>",
-        "",
-        f"📝 {summary}",
+        f"<b>{title}</b>",
+        f"<i>{meta}</i>",
     ]
 
+    if summary:
+        lines += ["", f"<blockquote expandable>{summary}</blockquote>"]
+
     if takeaways:
-        lines.append("")
-        lines.append("💡 <b>Điểm cốt lõi kỹ thuật:</b>")
-        for pt in takeaways[:3]:
-            lines.append(f"• {escape_html(pt)}")
+        lines.append("<b>Vì sao đáng đọc</b>")
+        for num, pt in zip(NUMERALS, takeaways[:3]):
+            lines.append(f"{num} {escape_html(pt)}")
 
-    if tech_stacks:
-        tech_names = [escape_html(t.get("name") if isinstance(t, dict) else str(t)) for t in tech_stacks[:3]]
-        lines.append("")
-        lines.append(f"🛠 <b>Tech Stack phát hiện:</b> {', '.join(tech_names)}")
-
-    if tags:
-        tag_str = " ".join([f"#{t.replace(' ', '_').replace('-', '_')}" for t in tags[:5]])
-        lines.append("")
-        lines.append(f"🏷 {escape_html(tag_str)}")
+    footer = [
+        f"<code>{escape_html(t.get('name') if isinstance(t, dict) else str(t))}</code>"
+        for t in tech_stacks[:4]
+    ]
+    footer += [
+        escape_html(f"#{t.replace(' ', '_').replace('-', '_')}") for t in tags[:4]
+    ]
+    if footer:
+        lines += ["", "  ".join(footer)]
 
     msg = "\n".join(lines)
 
@@ -91,13 +106,13 @@ def format_urgent_alert_message(article: Any) -> Tuple[str, Dict[str, Any]]:
     reply_markup = {
         "inline_keyboard": [
             [
-                {"text": "👍 Hữu ích", "callback_data": f"fb:like:{article_id}"},
-                {"text": "👎 Kém", "callback_data": f"fb:dislike:{article_id}"},
-                {"text": "🔖 Lưu bài", "callback_data": f"fb:bm:{article_id}"},
+                {"text": "Đọc bài gốc", "url": url},
+                {"text": "Mở TechPulse", "url": webapp_url},
             ],
             [
-                {"text": "📖 Đọc bài gốc ↗", "url": url},
-                {"text": "⚡ Mở TechPulse ↗", "url": webapp_url},
+                {"text": "👍 Hữu ích", "callback_data": f"fb:like:{article_id}"},
+                {"text": "👎 Kém", "callback_data": f"fb:dislike:{article_id}"},
+                {"text": "🔖 Lưu", "callback_data": f"fb:bm:{article_id}"},
             ],
         ]
     }
@@ -239,7 +254,9 @@ async def send_telegram_message(
     reply_markup: Optional[Dict[str, Any]] = None,
     timeout: float = 6.0,
     disable_preview: bool = False,
+    preview_url: Optional[str] = None,
 ) -> bool:
+    """preview_url shows that link's preview as a large card above the text."""
     bot_token = settings.TELEGRAM_BOT_TOKEN
     chat_id = settings.TELEGRAM_CHAT_ID
     if not bot_token or not chat_id:
@@ -250,8 +267,15 @@ async def send_telegram_message(
         "chat_id": chat_id,
         "text": html_text,
         "parse_mode": "HTML",
-        "disable_web_page_preview": disable_preview,
     }
+    if preview_url:
+        payload["link_preview_options"] = {
+            "url": preview_url,
+            "prefer_large_media": True,
+            "show_above_text": True,
+        }
+    elif disable_preview:
+        payload["link_preview_options"] = {"is_disabled": True}
     if reply_markup:
         payload["reply_markup"] = _sanitize_reply_markup_urls(reply_markup)
 
@@ -273,7 +297,9 @@ async def send_urgent_alert(article: Any) -> bool:
         return False
 
     msg, markup = format_urgent_alert_message(article)
-    return await send_telegram_message(msg, reply_markup=markup)
+    return await send_telegram_message(
+        msg, reply_markup=markup, preview_url=getattr(article, "url", None)
+    )
 
 
 async def answer_telegram_callback(callback_query_id: str, text: str) -> bool:

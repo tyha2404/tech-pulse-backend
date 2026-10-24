@@ -22,11 +22,17 @@ from app.core.config import settings
 from app.models.models import Article
 from app.services.ai_analyzer import _clean_json_response, get_ai_client
 from app.services.circuit_breaker import ai_circuit_breaker
-from app.services.telegram_service import FRONTEND_URL, escape_html, send_telegram_message
+from app.services.telegram_service import (
+    FRONTEND_URL,
+    escape_html,
+    score_dot,
+    send_telegram_message,
+)
 
 logger = logging.getLogger(__name__)
 
 TELEGRAM_LIMIT = 4096
+KEYCAPS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣"]
 WEEKDAYS = ["Thứ hai", "Thứ ba", "Thứ tư", "Thứ năm", "Thứ sáu", "Thứ bảy", "Chủ nhật"]
 
 
@@ -278,39 +284,42 @@ def format_daily_briefing_message(
     def build(themes: List[Dict[str, Any]], summary_limit: int) -> str:
         body: List[str] = []
         if briefing.get("headline"):
-            body += [escape_html(briefing["headline"]), ""]
+            body += [f"<b>{escape_html(briefing['headline'])}</b>", ""]
 
         if briefing.get("trend"):
-            body += ["<b>Xu hướng của ngày</b>", escape_html(briefing["trend"]), ""]
+            body += ["<b>XU HƯỚNG CỦA NGÀY</b>", f"<blockquote>{escape_html(briefing['trend'])}</blockquote>"]
 
         if themes:
-            body.append("<b>Hôm nay có gì</b>" if kind.key == "daily" else "<b>Có gì mới</b>")
+            body.append("<b>HÔM NAY CÓ GÌ</b>" if kind.key == "daily" else "<b>CÓ GÌ MỚI</b>")
+            # One quote block per theme so each reads as its own card
             for i, t in enumerate(themes, 1):
-                body.append(f"<b>{i}. {escape_html(t['title'])}</b>")
+                num = KEYCAPS[i - 1] if i <= len(KEYCAPS) else f"{i}."
+                card = [f"{num} <b>{escape_html(t['title'])}</b>"]
                 if t.get("summary"):
                     summary = t["summary"]
                     if len(summary) > summary_limit:
                         summary = summary[: summary_limit - 1].rstrip() + "…"
-                    body.append(escape_html(summary))
+                    card.append(escape_html(summary))
                     links = [source_link(by_id[aid]) for aid in t["article_ids"] if aid in by_id]
                     if links:
-                        body.append("Đọc thêm: " + ", ".join(links))
+                        card.append("↳ " + " · ".join(links))
                 else:
                     # Fallback themes have no prose: list titles instead
                     for aid in t["article_ids"]:
                         a = by_id[aid]
-                        body.append(f"• {escape_html(a.vietnamese_title or a.title)} ({source_link(a)})")
-                body.append("")
+                        card.append(f"• {escape_html(a.vietnamese_title or a.title)} ({source_link(a)})")
+                body.append("<blockquote>" + "\n".join(card) + "</blockquote>")
 
         if briefing.get("must_read"):
-            body.append("<b>Đáng đọc kỹ</b>")
+            body.append("<b>ĐÁNG ĐỌC KỸ</b>")
             for m in briefing["must_read"]:
                 a = by_id.get(m["id"])
                 if not a:
                     continue
+                score = a.relevance_score or 0
                 title = escape_html(a.vietnamese_title or a.title)
                 body.append(
-                    f'<b>{(a.relevance_score or 0):.1f}</b> · <a href="{escape_html(a.url)}">{title}</a>'
+                    f'{score_dot(score)} <b>{score:.1f}</b> · <a href="{escape_html(a.url)}">{title}</a>'
                 )
                 if m.get("why"):
                     body.append(f"<i>{escape_html(m['why'])}</i>")
@@ -321,7 +330,7 @@ def format_daily_briefing_message(
         }
         rest = len(articles) - len(mentioned)
         if rest > 0:
-            body.append(f"Còn {rest} bài khác trên TechPulse.")
+            body.append(f"<i>Còn {rest} bài khác trên TechPulse.</i>")
 
         text_only = _strip_tags("\n".join(body))
         minutes = max(1, round(len(text_only.split()) / 200))

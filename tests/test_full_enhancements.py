@@ -65,12 +65,12 @@ def test_urgent_alert_formatting():
     article = MockArticle()
     msg, markup = format_urgent_alert_message(article)
     
-    assert "TECHPULSE BREAKING" in msg
+    assert "TIN NÓNG" in msg
     assert "9.4" in msg
     assert "Chiến lược di chuyển cơ sở dữ liệu" in msg
     assert "inline_keyboard" in markup
     # Ensure feedback buttons exist in markup
-    buttons = markup["inline_keyboard"][0]
+    buttons = [b for row in markup["inline_keyboard"] for b in row]
     assert any("fb:like:42" in b.get("callback_data", "") for b in buttons)
     assert any("fb:dislike:42" in b.get("callback_data", "") for b in buttons)
 
