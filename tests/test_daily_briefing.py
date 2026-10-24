@@ -60,7 +60,7 @@ def test_validate_drops_unknown_ids_and_empty_themes():
     }
     out = _validate_briefing(data, by_id)
     assert out["themes"] == [{"title": "Agents", "summary": "Hai bài.", "article_ids": [1, 2]}]
-    assert out["must_read"] == [{"id": 1, "why": "Đáng đọc"}]
+    assert out["must_read"] == [{"id": 1, "title": "", "why": "Đáng đọc"}]
     assert _validate_briefing({"themes": [], "must_read": []}, by_id) is None
 
 
@@ -108,6 +108,16 @@ def test_fallback_groups_by_tag_without_llm():
     assert "• Bài 1" in msg  # fallback themes list titles instead of prose
 
 
+def test_fallback_skips_untranslated_articles():
+    articles = [_article(1, 9.0, tags=["AI"], title="English title"), _article(2, 8.0, tags=["AI"])]
+    articles[0].ai_model_used = "extractive-fallback"
+    out = fallback_briefing(articles)
+    assert out["themes"][0]["article_ids"] == [2]
+    assert [m["id"] for m in out["must_read"]] == [2]
+    msg, _ = format_daily_briefing_message(out, articles, now=NOW)
+    assert "English title" not in msg and "Còn 1 bài khác" in msg
+
+
 @pytest.mark.asyncio
 async def test_generate_uses_llm_json():
     articles = [_article(1, 9.0), _article(2, 8.0)]
@@ -115,13 +125,20 @@ async def test_generate_uses_llm_json():
         {
             "headline": "Hôm nay",
             "themes": [{"title": "T", "summary": "S", "article_ids": [1, 2]}],
-            "must_read": [{"id": 2, "why": "W"}],
+            "must_read": [{"id": 2, "title": "Tiêu đề đã dịch", "why": "W"}],
         }
     )
     with patch("app.services.ai_analyzer.AsyncOpenAI", _fake_llm(f"```json\n{llm}\n```")):
         briefing, model = await generate_daily_briefing(articles)
     assert model != "fallback"
-    assert briefing["must_read"] == [{"id": 2, "why": "W"}]
+    assert briefing["must_read"] == [{"id": 2, "title": "Tiêu đề đã dịch", "why": "W"}]
+
+
+def test_must_read_prefers_translated_title_over_stored_one():
+    articles = [_article(1, 9.0, title="Postgres ships vector indexes")]
+    briefing = {"headline": "", "themes": [], "must_read": [{"id": 1, "title": "Postgres có chỉ mục vector", "why": ""}]}
+    msg, _ = format_daily_briefing_message(briefing, articles, now=NOW)
+    assert "Postgres có chỉ mục vector" in msg and "Postgres ships" not in msg
 
 
 @pytest.mark.asyncio

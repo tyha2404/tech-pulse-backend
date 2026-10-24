@@ -20,7 +20,11 @@ from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
 from app.models.models import Article
-from app.services.ai_analyzer import _clean_json_response, get_ai_client
+from app.services.ai_analyzer import (
+    EXTRACTIVE_FALLBACK_MODEL,
+    _clean_json_response,
+    get_ai_client,
+)
 from app.services.circuit_breaker import ai_circuit_breaker
 from app.services.telegram_service import (
     FRONTEND_URL,
@@ -82,13 +86,16 @@ Dưới đây là các bài đã được chấm điểm (JSON). Hãy:
 1. Gom các bài thành tối đa {max_themes} chủ đề. Mỗi chủ đề viết 2-3 câu tổng hợp ý chung của các bài
    (không liệt kê lại từng bài), nêu rõ điều gì thay đổi và vì sao kỹ sư nên quan tâm.
    Bỏ qua bài lẻ tẻ, ít giá trị; không cần chủ đề nào cũng có nhiều bài.
-2. Chọn tối đa {max_must_read} bài đáng đọc kỹ nhất, mỗi bài một câu giải thích lý do cụ thể.
+2. Chọn tối đa {max_must_read} bài đáng đọc kỹ nhất, mỗi bài một câu giải thích lý do cụ thể
+   và một tiêu đề tiếng Việt ("title"): dịch tiêu đề gốc nếu nó đang là tiếng Anh hoặc ngôn ngữ khác.
 3. Viết một câu mở đầu tóm tắt nội dung chính.{trend_instruction}
 
-Toàn bộ bằng tiếng Việt tự nhiên, ngắn gọn, không dùng ký tự Trung/Nhật. Chỉ dùng id có trong dữ liệu.
+Toàn bộ bằng tiếng Việt tự nhiên, ngắn gọn, không dùng ký tự Trung/Nhật; dữ liệu đầu vào có thể còn
+tiếng Anh, hãy dịch sang tiếng Việt (giữ nguyên tên riêng, tên sản phẩm và thuật ngữ kỹ thuật thông dụng).
+Chỉ dùng id có trong dữ liệu.
 Chỉ trả về JSON đúng dạng:
 {{"headline": "...",{trend_field} "themes": [{{"title": "...", "summary": "...", "article_ids": [1, 2]}}],
-  "must_read": [{{"id": 1, "why": "..."}}]}}
+  "must_read": [{{"id": 1, "title": "...", "why": "..."}}]}}
 
 DỮ LIỆU:
 {articles_json}"""
@@ -178,7 +185,9 @@ def _validate_briefing(
             continue
         ids = real_ids([m.get("id")])
         if ids and ids[0] not in [x["id"] for x in must_read]:
-            must_read.append({"id": ids[0], "why": str(m.get("why") or "")})
+            must_read.append(
+                {"id": ids[0], "title": str(m.get("title") or ""), "why": str(m.get("why") or "")}
+            )
 
     if not themes and not must_read:
         return None
@@ -191,8 +200,10 @@ def _validate_briefing(
 
 
 def fallback_briefing(articles: List[Article], kind: BriefingKind = DAILY) -> Dict[str, Any]:
-    """No-LLM briefing: group the top articles by their most common tags."""
-    top = articles[:15]
+    """No-LLM briefing: group the top articles by their most common tags.
+    Articles the crawler couldn't run through an LLM are left out (only counted):
+    their titles were never translated and nothing here can translate them."""
+    top = [a for a in articles if a.ai_model_used != EXTRACTIVE_FALLBACK_MODEL][:15]
     tag_counts = Counter(t for a in top for t in (a.tags or [])[:2])
     themes = []
     used: set = set()
@@ -206,7 +217,7 @@ def fallback_briefing(articles: List[Article], kind: BriefingKind = DAILY) -> Di
             break
     must_read = [
         {"id": a.id, "why": (a.key_takeaways or [""])[0] or ""}
-        for a in articles[: kind.max_must_read]
+        for a in top[: kind.max_must_read]
     ]
     high = sum(1 for a in articles if (a.relevance_score or 0) >= 8)
     return {
@@ -317,7 +328,8 @@ def format_daily_briefing_message(
                 if not a:
                     continue
                 score = a.relevance_score or 0
-                title = escape_html(a.vietnamese_title or a.title)
+                # The LLM's translated title wins over a stored title that may still be English
+                title = escape_html(m.get("title") or a.vietnamese_title or a.title)
                 body.append(
                     f'{score_dot(score)} <b>{score:.1f}</b> · <a href="{escape_html(a.url)}">{title}</a>'
                 )

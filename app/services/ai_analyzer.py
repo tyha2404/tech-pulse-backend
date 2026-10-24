@@ -111,6 +111,11 @@ def _build_calibrated_system_prompt(few_shot_examples: Optional[List[dict]] = No
     return BASE_SYSTEM_PROMPT + examples_text
 
 
+# ai_model_used for articles analyzed without an LLM: their text is copied from the
+# source untranslated, so it may still be English
+EXTRACTIVE_FALLBACK_MODEL = "extractive-fallback"
+
+
 def extractive_heuristic_fallback(title: str, content: str, url: str) -> AIAnalysisResult:
     """Heuristic fallback when all AI models in the failover chain fail"""
     cleaned_content = re.sub(r"\s+", " ", content).strip()
@@ -207,7 +212,7 @@ Analyze the article according to your system instructions. Output ONLY the requi
     # All AI providers failed or circuit open -> Extractive Heuristic Fallback
     logger.error(f"🚨 All AI models in failover chain exhausted ({last_exception}). Using Extractive Fallback.")
     fallback_res = extractive_heuristic_fallback(title, content, url)
-    return fallback_res, "extractive-fallback"
+    return fallback_res, EXTRACTIVE_FALLBACK_MODEL
 
 
 async def chat_with_article(
