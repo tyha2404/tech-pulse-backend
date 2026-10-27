@@ -17,6 +17,7 @@ from app.services.daily_briefing import (
     previous_slot_start,
     _validate_briefing,
     fallback_briefing,
+    format_briefing_messages,
     format_daily_briefing_message,
     generate_daily_briefing,
 )
@@ -45,6 +46,35 @@ def _fake_llm(content: str):
     response.choices = [MagicMock(message=MagicMock(content=content))]
     mock_cls.return_value.chat.completions.create = AsyncMock(return_value=response)
     return mock_cls
+
+
+def test_every_unmentioned_article_is_listed_across_split_messages():
+    articles = [_article(i, 8.0, title=f"Bài số {i} " + "x" * 80) for i in range(1, 121)]
+    briefing = {
+        "headline": "Nhiều bài",
+        "themes": [{"title": "Agents", "summary": "Tóm tắt.", "article_ids": [1, 2]}],
+        "must_read": [{"id": 3, "why": "Đáng đọc"}],
+    }
+    messages, markup = format_briefing_messages(briefing, articles, now=NOW)
+
+    assert len(messages) > 2
+    assert all(len(m) <= TELEGRAM_LIMIT for m in messages)
+    assert "Còn 117 bài khác" in messages[0]
+    listed = "\n".join(messages[1:])
+    assert "CÁC BÀI KHÁC" in messages[1]
+    for i in range(4, 121):
+        assert f"https://example.com/{i}\"" in listed
+    for i in (1, 2, 3):
+        assert f"https://example.com/{i}\"" not in listed
+
+
+async def test_llm_sees_every_article():
+    articles = [_article(i, 8.0) for i in range(1, 61)]
+    llm = _fake_llm(json.dumps({"headline": "h", "themes": [], "must_read": [{"id": 1, "why": "w"}]}))
+    with patch("app.services.daily_briefing.get_ai_client", return_value=llm.return_value):
+        await generate_daily_briefing(articles, UPDATE)
+    prompt = llm.return_value.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+    assert '"id": 60' in prompt
 
 
 def test_validate_drops_unknown_ids_and_empty_themes():

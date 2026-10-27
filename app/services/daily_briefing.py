@@ -48,8 +48,6 @@ class BriefingKind:
     emoji: str
     max_themes: int
     max_must_read: int
-    # How many articles the LLM sees; the rest are only counted
-    max_articles_for_ai: int
     # Describes the briefing to the LLM
     scope: str
     # Super summary also asks for the day's single biggest trend
@@ -64,7 +62,6 @@ UPDATE = BriefingKind(
     emoji="📰",
     max_themes=3,
     max_must_read=2,
-    max_articles_for_ai=20,
     scope="bản cập nhật nhanh giữa ngày, chỉ gồm các bài mới kể từ lần cập nhật trước, đọc trong 1-2 phút",
     with_trend=False,
     send_when_empty=False,
@@ -76,7 +73,6 @@ DAILY = BriefingKind(
     emoji="🌙",
     max_themes=5,
     max_must_read=5,
-    max_articles_for_ai=40,
     scope="bản siêu tổng hợp cuối ngày cho toàn bộ 24 giờ qua, đọc trong 5 phút",
     with_trend=True,
     send_when_empty=True,
@@ -242,7 +238,7 @@ async def generate_daily_briefing(
         trend_instruction=TREND_INSTRUCTION if kind.with_trend else "",
         trend_field=' "trend": "...",' if kind.with_trend else "",
         articles_json=json.dumps(
-            [_article_payload(a) for a in articles[: kind.max_articles_for_ai]], ensure_ascii=False
+            [_article_payload(a) for a in articles], ensure_ascii=False
         ),
     )
     client = get_ai_client(settings.AI_TIMEOUT_BACKGROUND)
@@ -287,6 +283,19 @@ def format_daily_briefing_message(
     kind: BriefingKind = DAILY,
     since: Optional[datetime.datetime] = None,
 ) -> Tuple[str, Dict[str, Any]]:
+    """The main briefing message only; see format_briefing_messages for the full set."""
+    messages, reply_markup = format_briefing_messages(briefing, articles, now=now, kind=kind, since=since)
+    return messages[0], reply_markup
+
+
+def format_briefing_messages(
+    briefing: Dict[str, Any],
+    articles: List[Article],
+    now: Optional[datetime.datetime] = None,
+    kind: BriefingKind = DAILY,
+    since: Optional[datetime.datetime] = None,
+) -> Tuple[List[str], Dict[str, Any]]:
+    """Main briefing, followed by as many messages as needed to list every article it didn't mention."""
     by_id = {a.id: a for a in articles}
     now = now or _local_now()
 
@@ -344,7 +353,7 @@ def format_daily_briefing_message(
         }
         rest = len(articles) - len(mentioned)
         if rest > 0:
-            body.append(f"<i>Còn {rest} bài khác trên TechPulse.</i>")
+            body.append(f"<i>Còn {rest} bài khác, xem danh sách bên dưới.</i>")
 
         text_only = _strip_tags("\n".join(body))
         minutes = max(1, round(len(text_only.split()) / 200))
@@ -368,7 +377,29 @@ def format_daily_briefing_message(
         msg = build(themes, 200)
 
     reply_markup = {"inline_keyboard": [[{"text": "Mở TechPulse", "url": FRONTEND_URL}]]}
-    return msg, reply_markup
+
+    mentioned = {i for t in themes for i in t["article_ids"]} | {
+        m["id"] for m in briefing.get("must_read", [])
+    }
+    lines = []
+    for a in articles:
+        if a.id in mentioned:
+            continue
+        score = a.relevance_score or 0
+        title = escape_html(a.vietnamese_title or a.title)
+        lines.append(f'{score_dot(score)} <b>{score:.1f}</b> · <a href="{escape_html(a.url)}">{title}</a>')
+
+    messages = [msg]
+    chunk = "<b>CÁC BÀI KHÁC</b>"
+    for line in lines:
+        if len(chunk) + 1 + len(line) > TELEGRAM_LIMIT:
+            messages.append(chunk)
+            chunk = line
+        else:
+            chunk += "\n" + line
+    if lines:
+        messages.append(chunk)
+    return messages, reply_markup
 
 
 async def dispatch_briefing(kind: BriefingKind, since: datetime.datetime) -> bool:
@@ -388,12 +419,20 @@ async def dispatch_briefing(kind: BriefingKind, since: datetime.datetime) -> boo
             return await send_telegram_message(msg, disable_preview=True)
 
         briefing, model_used = await generate_daily_briefing(articles, kind)
-        msg, markup = format_daily_briefing_message(briefing, articles, now=now, kind=kind, since=since)
+        messages, markup = format_briefing_messages(briefing, articles, now=now, kind=kind, since=since)
         logger.info(
             f"{kind.title}: {len(articles)} articles, {len(briefing['themes'])} themes, "
-            f"model={model_used}, {len(msg)} chars"
+            f"model={model_used}, {len(messages)} messages"
         )
-        return await send_telegram_message(msg, reply_markup=markup, disable_preview=True)
+        # The "Mở TechPulse" button goes on the last message, under the full list
+        sent = await send_telegram_message(
+            messages[0], reply_markup=markup if len(messages) == 1 else None, disable_preview=True
+        )
+        for i, extra in enumerate(messages[1:], 2):
+            sent = await send_telegram_message(
+                extra, reply_markup=markup if i == len(messages) else None, disable_preview=True
+            ) and sent
+        return sent
 
 
 async def dispatch_daily_briefing(hours: int = 24) -> bool:
