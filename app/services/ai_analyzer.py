@@ -32,6 +32,11 @@ def message_text(response) -> str:
     """Return the first choice's text, raising a clear error on empty/malformed responses."""
     choices = getattr(response, "choices", None)
     if not choices or choices[0].message is None or not choices[0].message.content:
+        # Some upstreams (via 9router) return HTTP 200 with the failure in an "error" body field
+        body_error = getattr(response, "error", None) or (getattr(response, "model_extra", None) or {}).get("error")
+        if body_error:
+            message = body_error.get("message") if isinstance(body_error, dict) else str(body_error)
+            raise ValueError(f"Upstream error in 200 response: {message}")
         try:
             raw = response.model_dump_json()
         except Exception:
