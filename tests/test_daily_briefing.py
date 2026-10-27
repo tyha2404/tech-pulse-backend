@@ -52,8 +52,7 @@ def test_every_unmentioned_article_is_listed_across_split_messages():
     articles = [_article(i, 8.0, title=f"Bài số {i} " + "x" * 80) for i in range(1, 121)]
     briefing = {
         "headline": "Nhiều bài",
-        "themes": [{"title": "Agents", "summary": "Tóm tắt.", "article_ids": [1, 2]}],
-        "must_read": [{"id": 3, "why": "Đáng đọc"}],
+        "must_read": [{"id": i, "summary": "", "why": "Đáng đọc"} for i in (1, 2, 3)],
     }
     messages, markup = format_briefing_messages(briefing, articles, now=NOW)
 
@@ -61,7 +60,9 @@ def test_every_unmentioned_article_is_listed_across_split_messages():
     assert all(len(m) <= TELEGRAM_LIMIT for m in messages)
     assert "Còn 117 bài khác" in messages[0]
     listed = "\n".join(messages[1:])
-    assert "CÁC BÀI KHÁC" in messages[1]
+    assert "CÁC BÀI KHÁC (117)" in messages[1] and "CÁC BÀI KHÁC (tiếp)" in messages[2]
+    # Every listed article carries its short description
+    assert listed.count("<i>Tóm tắt bài ") == 117
     for i in range(4, 121):
         assert f"https://example.com/{i}\"" in listed
     for i in (1, 2, 3):
@@ -70,36 +71,36 @@ def test_every_unmentioned_article_is_listed_across_split_messages():
 
 async def test_llm_sees_every_article():
     articles = [_article(i, 8.0) for i in range(1, 61)]
-    llm = _fake_llm(json.dumps({"headline": "h", "themes": [], "must_read": [{"id": 1, "why": "w"}]}))
+    llm = _fake_llm(json.dumps({"headline": "h", "must_read": [{"id": 1, "why": "w"}]}))
     with patch("app.services.daily_briefing.get_ai_client", return_value=llm.return_value):
         await generate_daily_briefing(articles, UPDATE)
     prompt = llm.return_value.chat.completions.create.call_args.kwargs["messages"][0]["content"]
     assert '"id": 60' in prompt
 
 
-def test_validate_drops_unknown_ids_and_empty_themes():
+def test_validate_drops_unknown_and_duplicate_picks():
     by_id = {1: _article(1, 9.0), 2: _article(2, 8.0)}
     data = {
         "headline": "Ngày bận rộn",
-        "themes": [
-            {"title": "Agents", "summary": "Hai bài.", "article_ids": [1, 999, "2", "x"]},
-            {"title": "Ma", "summary": "Không có bài thật.", "article_ids": [42]},
-            {"title": "", "summary": "Thiếu tiêu đề", "article_ids": [1]},
+        "must_read": [
+            {"id": 999, "why": "?"},
+            {"id": 1, "summary": "Nói về X", "why": "Đáng đọc"},
+            {"id": "1", "why": "trùng"},
+            {"id": "x"},
+            "rác",
         ],
-        "must_read": [{"id": 999, "why": "?"}, {"id": 1, "why": "Đáng đọc"}, {"id": 1, "why": "trùng"}],
     }
     out = _validate_briefing(data, by_id)
-    assert out["themes"] == [{"title": "Agents", "summary": "Hai bài.", "article_ids": [1, 2]}]
-    assert out["must_read"] == [{"id": 1, "title": "", "why": "Đáng đọc"}]
-    assert _validate_briefing({"themes": [], "must_read": []}, by_id) is None
+    assert out["must_read"] == [{"id": 1, "title": "", "summary": "Nói về X", "why": "Đáng đọc"}]
+    assert "themes" not in out
+    assert _validate_briefing({"must_read": []}, by_id) is None
 
 
 def test_format_message_escapes_html_and_counts_rest():
     articles = [_article(1, 9.2, title="<b>Lỗ hổng</b> & bản vá")] + [_article(i, 6.0) for i in range(2, 8)]
     briefing = {
         "headline": "Một ngày <script>",
-        "themes": [{"title": "Bảo mật", "summary": "Bản vá khẩn.", "article_ids": [1, 2]}],
-        "must_read": [{"id": 1, "why": "Ảnh hưởng mọi bản cài đặt"}],
+        "must_read": [{"id": 1, "summary": "Bản vá <khẩn>.", "why": "Ảnh hưởng mọi bản cài đặt"}],
     }
     msg, markup = format_daily_briefing_message(briefing, articles, now=NOW)
 
@@ -107,7 +108,10 @@ def test_format_message_escapes_html_and_counts_rest():
     assert "7 bài mới" in msg
     assert "&lt;script&gt;" in msg and "<script>" not in msg
     assert "&lt;b&gt;Lỗ hổng&lt;/b&gt; &amp; bản vá" in msg
-    assert "Còn 5 bài khác" in msg
+    assert "Bản vá &lt;khẩn&gt;." in msg and "→ Ảnh hưởng mọi bản cài đặt" in msg
+    assert "ĐÁNG ĐỌC KỸ" in msg and "HÔM NAY CÓ GÌ" not in msg
+    # Short briefings fit in one message: the list follows the picks, no "see below" note
+    assert "CÁC BÀI KHÁC (6)" in msg and "Còn 6 bài khác" not in msg
     assert markup["inline_keyboard"][0][0]["text"] == "Mở TechPulse"
 
 
@@ -115,37 +119,33 @@ def test_format_message_stays_under_telegram_limit():
     articles = [_article(i, 8.0) for i in range(1, 30)]
     briefing = {
         "headline": "x" * 300,
-        "themes": [
-            {"title": f"Chủ đề {t}", "summary": "Rất dài. " * 200, "article_ids": [t * 3 + 1, t * 3 + 2, t * 3 + 3]}
-            for t in range(4)
-        ],
-        "must_read": [{"id": i, "why": "Lý do " * 40} for i in (1, 2, 3)],
+        "trend": "Xu hướng " * 300,
+        "must_read": [{"id": i, "summary": "Rất dài. " * 200, "why": "Lý do " * 40} for i in range(1, 6)],
     }
-    msg, _ = format_daily_briefing_message(briefing, articles, now=NOW)
-    assert len(msg) <= TELEGRAM_LIMIT
+    messages, _ = format_briefing_messages(briefing, articles, now=NOW)
+    assert all(len(m) <= TELEGRAM_LIMIT for m in messages)
+    # Picks squeezed out of the main message are still listed below, none lost
+    everything = "\n".join(messages)
+    for i in range(1, 30):
+        assert f"https://example.com/{i}\"" in everything
 
 
-def test_fallback_groups_by_tag_without_llm():
-    articles = [
-        _article(1, 9.0, tags=["AI"]),
-        _article(2, 8.5, tags=["AI"]),
-        _article(3, 7.0, tags=["Backend"]),
-    ]
+def test_fallback_picks_top_articles_without_llm():
+    articles = [_article(i, 9.0 - i * 0.1) for i in range(1, 8)]
     out = fallback_briefing(articles)
-    assert out["themes"][0] == {"title": "AI", "summary": "", "article_ids": [1, 2]}
-    assert [m["id"] for m in out["must_read"]] == [1, 2, 3]
+    assert [m["id"] for m in out["must_read"]] == [1, 2, 3, 4, 5]
     msg, _ = format_daily_briefing_message(out, articles, now=NOW)
-    assert "• Bài 1" in msg  # fallback themes list titles instead of prose
+    # Without an LLM summary the card uses the stored one
+    assert "Tóm tắt bài 1." in msg and "→ Ý chính của bài 1" in msg
 
 
 def test_fallback_skips_untranslated_articles():
     articles = [_article(1, 9.0, tags=["AI"], title="English title"), _article(2, 8.0, tags=["AI"])]
     articles[0].ai_model_used = "extractive-fallback"
     out = fallback_briefing(articles)
-    assert out["themes"][0]["article_ids"] == [2]
     assert [m["id"] for m in out["must_read"]] == [2]
     msg, _ = format_daily_briefing_message(out, articles, now=NOW)
-    assert "English title" not in msg and "Còn 1 bài khác" in msg
+    assert "English title" in msg and "CÁC BÀI KHÁC (1)" in msg
 
 
 @pytest.mark.asyncio
@@ -154,19 +154,18 @@ async def test_generate_uses_llm_json():
     llm = json.dumps(
         {
             "headline": "Hôm nay",
-            "themes": [{"title": "T", "summary": "S", "article_ids": [1, 2]}],
-            "must_read": [{"id": 2, "title": "Tiêu đề đã dịch", "why": "W"}],
+            "must_read": [{"id": 2, "title": "Tiêu đề đã dịch", "summary": "S", "why": "W"}],
         }
     )
     with patch("app.services.ai_analyzer.AsyncOpenAI", _fake_llm(f"```json\n{llm}\n```")):
         briefing, model = await generate_daily_briefing(articles)
     assert model != "fallback"
-    assert briefing["must_read"] == [{"id": 2, "title": "Tiêu đề đã dịch", "why": "W"}]
+    assert briefing["must_read"] == [{"id": 2, "title": "Tiêu đề đã dịch", "summary": "S", "why": "W"}]
 
 
 def test_must_read_prefers_translated_title_over_stored_one():
     articles = [_article(1, 9.0, title="Postgres ships vector indexes")]
-    briefing = {"headline": "", "themes": [], "must_read": [{"id": 1, "title": "Postgres có chỉ mục vector", "why": ""}]}
+    briefing = {"headline": "", "must_read": [{"id": 1, "title": "Postgres có chỉ mục vector", "why": ""}]}
     msg, _ = format_daily_briefing_message(briefing, articles, now=NOW)
     assert "Postgres có chỉ mục vector" in msg and "Postgres ships" not in msg
 
@@ -174,7 +173,7 @@ def test_must_read_prefers_translated_title_over_stored_one():
 @pytest.mark.asyncio
 async def test_generate_falls_back_when_llm_returns_garbage():
     articles = [_article(1, 9.0, tags=["AI"])]
-    with patch("app.services.ai_analyzer.AsyncOpenAI", _fake_llm('{"themes": [{"article_ids": [77]}]}')):
+    with patch("app.services.ai_analyzer.AsyncOpenAI", _fake_llm('{"must_read": [{"id": 77}]}')):
         briefing, model = await generate_daily_briefing(articles)
     assert model == "fallback"
     assert briefing["must_read"][0]["id"] == 1
@@ -264,7 +263,6 @@ def test_update_message_header_and_trend_only_in_daily():
     briefing = {
         "headline": "H",
         "trend": "Xu hướng lớn",
-        "themes": [{"title": "T", "summary": "S", "article_ids": [1]}],
         "must_read": [{"id": 1, "why": "W"}],
     }
     now = datetime.datetime(2026, 10, 23, 12, 0, tzinfo=VN)
@@ -273,7 +271,7 @@ def test_update_message_header_and_trend_only_in_daily():
     upd, _ = format_daily_briefing_message({**briefing, "trend": ""}, articles, now=now, kind=UPDATE, since=since)
     assert "Cập nhật 12:00 · Thứ sáu 23/10" in upd
     assert "2 bài mới từ 09:00" in upd
-    assert "CÓ GÌ MỚI" in upd and "XU HƯỚNG CỦA NGÀY" not in upd
+    assert "ĐÁNG ĐỌC KỸ" in upd and "XU HƯỚNG CỦA NGÀY" not in upd
 
     daily, _ = format_daily_briefing_message(briefing, articles, now=now, kind=DAILY)
     assert "XU HƯỚNG CỦA NGÀY" in daily and "Xu hướng lớn" in daily
@@ -282,7 +280,7 @@ def test_update_message_header_and_trend_only_in_daily():
 @pytest.mark.asyncio
 async def test_validate_keeps_trend_only_for_daily():
     by_id = {1: _article(1, 9.0)}
-    data = {"trend": "T", "themes": [{"title": "a", "summary": "b", "article_ids": [1]}]}
+    data = {"trend": "T", "must_read": [{"id": 1, "why": "b"}]}
     assert _validate_briefing(data, by_id, DAILY)["trend"] == "T"
     assert _validate_briefing(data, by_id, UPDATE)["trend"] == ""
 

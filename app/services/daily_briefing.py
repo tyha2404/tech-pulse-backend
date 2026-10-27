@@ -1,4 +1,4 @@
-"""Telegram briefings that turn many articles into a few themes and a short must-read list.
+"""Telegram briefings: a short must-read list plus every other article with a one-line description.
 
 Two kinds run on a schedule (BRIEFING_TIMEZONE):
 - short updates at BRIEFING_UPDATE_HOURS (default 9, 12, 18), each covering only the
@@ -10,7 +10,6 @@ import datetime
 import json
 import logging
 import re
-from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
@@ -37,8 +36,8 @@ from app.services.telegram_service import (
 logger = logging.getLogger(__name__)
 
 TELEGRAM_LIMIT = 4096
-KEYCAPS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣"]
 WEEKDAYS = ["Thứ hai", "Thứ ba", "Thứ tư", "Thứ năm", "Thứ sáu", "Thứ bảy", "Chủ nhật"]
+DIVIDER = "━━━━━━━━━━━━━━"
 
 
 @dataclass(frozen=True)
@@ -46,7 +45,6 @@ class BriefingKind:
     key: str
     title: str
     emoji: str
-    max_themes: int
     max_must_read: int
     # Describes the briefing to the LLM
     scope: str
@@ -60,9 +58,8 @@ UPDATE = BriefingKind(
     key="update",
     title="Cập nhật",
     emoji="📰",
-    max_themes=3,
-    max_must_read=2,
-    scope="bản cập nhật nhanh giữa ngày, chỉ gồm các bài mới kể từ lần cập nhật trước, đọc trong 1-2 phút",
+    max_must_read=3,
+    scope="bản cập nhật nhanh giữa ngày, chỉ gồm các bài mới kể từ lần cập nhật trước",
     with_trend=False,
     send_when_empty=False,
 )
@@ -71,34 +68,32 @@ DAILY = BriefingKind(
     key="daily",
     title="Siêu tổng hợp cuối ngày",
     emoji="🌙",
-    max_themes=5,
     max_must_read=5,
-    scope="bản siêu tổng hợp cuối ngày cho toàn bộ 24 giờ qua, đọc trong 5 phút",
+    scope="bản siêu tổng hợp cuối ngày cho toàn bộ 24 giờ qua",
     with_trend=True,
     send_when_empty=True,
 )
 
 BRIEFING_PROMPT = """Bạn là biên tập viên công nghệ viết {scope} cho một kỹ sư Backend & AI.
 Dưới đây là các bài đã được chấm điểm (JSON). Hãy:
-1. Gom các bài thành tối đa {max_themes} chủ đề. Mỗi chủ đề viết 2-3 câu tổng hợp ý chung của các bài
-   (không liệt kê lại từng bài), nêu rõ điều gì thay đổi và vì sao kỹ sư nên quan tâm.
-   Bỏ qua bài lẻ tẻ, ít giá trị; không cần chủ đề nào cũng có nhiều bài.
-2. Chọn tối đa {max_must_read} bài đáng đọc kỹ nhất, mỗi bài một câu giải thích lý do cụ thể
-   và một tiêu đề tiếng Việt ("title"): dịch tiêu đề gốc nếu nó đang là tiếng Anh hoặc ngôn ngữ khác.
-3. Viết một câu mở đầu tóm tắt nội dung chính.{trend_instruction}
+1. Chọn tối đa {max_must_read} bài đáng đọc kỹ nhất. Với mỗi bài viết:
+   - "title": tiêu đề tiếng Việt ngắn gọn (dịch nếu tiêu đề gốc là tiếng Anh hoặc ngôn ngữ khác);
+   - "summary": 1-2 câu nói bài viết nói về điều gì, cụ thể và có số liệu/tên riêng nếu có;
+   - "why": 1 câu nêu vì sao kỹ sư Backend & AI nên đọc (tác động thực tế, không chung chung).
+2. Viết "headline": một câu mở đầu tóm tắt điểm chính của đợt tin này.{trend_instruction}
 
 Toàn bộ bằng tiếng Việt tự nhiên, ngắn gọn, không dùng ký tự Trung/Nhật; dữ liệu đầu vào có thể còn
 tiếng Anh, hãy dịch sang tiếng Việt (giữ nguyên tên riêng, tên sản phẩm và thuật ngữ kỹ thuật thông dụng).
 Chỉ dùng id có trong dữ liệu.
 Chỉ trả về JSON đúng dạng:
-{{"headline": "...",{trend_field} "themes": [{{"title": "...", "summary": "...", "article_ids": [1, 2]}}],
-  "must_read": [{{"id": 1, "title": "...", "why": "..."}}]}}
+{{"headline": "...",{trend_field}
+  "must_read": [{{"id": 1, "title": "...", "summary": "...", "why": "..."}}]}}
 
 DỮ LIỆU:
 {articles_json}"""
 
 TREND_INSTRUCTION = """
-4. Viết "trend": 2-3 câu về xu hướng lớn nhất xuyên suốt cả ngày (nối nhiều chủ đề nếu có),
+3. Viết "trend": 2-3 câu về xu hướng lớn nhất xuyên suốt cả ngày,
    và một gợi ý hành động cụ thể cho kỹ sư Backend."""
 
 
@@ -112,6 +107,21 @@ def _article_payload(a: Article) -> Dict[str, Any]:
         "takeaways": (a.key_takeaways or [])[:2],
         "tags": (a.tags or [])[:4],
     }
+
+
+def _truncate(text: str, limit: int) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def short_description(a: Article, limit: int = 180) -> str:
+    """First sentence of the stored Vietnamese summary, else the first key takeaway."""
+    text = (a.vietnamese_summary or "").strip()
+    if text:
+        text = re.split(r"(?<=[.!?])\s+", text, maxsplit=1)[0]
+    else:
+        text = next((t for t in (a.key_takeaways or []) if t), "")
+    return _truncate(text, limit)
 
 
 def _local_now() -> datetime.datetime:
@@ -156,72 +166,50 @@ async def collect_briefing_articles(db, since: datetime.datetime) -> List[Articl
 def _validate_briefing(
     data: Dict[str, Any], by_id: Dict[int, Article], kind: BriefingKind = DAILY
 ) -> Optional[Dict[str, Any]]:
-    """Keep only well-formed themes / picks that reference real article ids."""
-
-    def real_ids(ids) -> List[int]:
-        out = []
-        for i in ids or []:
-            try:
-                i = int(i)
-            except (TypeError, ValueError):
-                continue
-            if i in by_id and i not in out:
-                out.append(i)
-        return out
-
-    themes = []
-    for t in data.get("themes") or []:
-        if not isinstance(t, dict) or not t.get("title") or not t.get("summary"):
-            continue
-        ids = real_ids(t.get("article_ids"))
-        if ids:
-            themes.append({"title": str(t["title"]), "summary": str(t["summary"]), "article_ids": ids[:3]})
-
+    """Keep only well-formed picks that reference real article ids."""
     must_read = []
+    seen = set()
     for m in data.get("must_read") or []:
         if not isinstance(m, dict):
             continue
-        ids = real_ids([m.get("id")])
-        if ids and ids[0] not in [x["id"] for x in must_read]:
-            must_read.append(
-                {"id": ids[0], "title": str(m.get("title") or ""), "why": str(m.get("why") or "")}
-            )
+        try:
+            aid = int(m.get("id"))
+        except (TypeError, ValueError):
+            continue
+        if aid not in by_id or aid in seen:
+            continue
+        seen.add(aid)
+        must_read.append(
+            {
+                "id": aid,
+                "title": str(m.get("title") or ""),
+                "summary": str(m.get("summary") or ""),
+                "why": str(m.get("why") or ""),
+            }
+        )
 
-    if not themes and not must_read:
+    if not must_read:
         return None
     return {
         "headline": str(data.get("headline") or ""),
         "trend": str(data.get("trend") or "") if kind.with_trend else "",
-        "themes": themes[: kind.max_themes],
         "must_read": must_read[: kind.max_must_read],
     }
 
 
 def fallback_briefing(articles: List[Article], kind: BriefingKind = DAILY) -> Dict[str, Any]:
-    """No-LLM briefing: group the top articles by their most common tags.
-    Articles the crawler couldn't run through an LLM are left out (only counted):
+    """No-LLM briefing: the top-scored articles become the picks.
+    Articles the crawler couldn't run through an LLM are not picked (they are still listed):
     their titles were never translated and nothing here can translate them."""
-    top = [a for a in articles if a.ai_model_used != EXTRACTIVE_FALLBACK_MODEL][:15]
-    tag_counts = Counter(t for a in top for t in (a.tags or [])[:2])
-    themes = []
-    used: set = set()
-    for tag, _ in tag_counts.most_common():
-        ids = [a.id for a in top if tag in (a.tags or []) and a.id not in used][:3]
-        if not ids:
-            continue
-        used.update(ids)
-        themes.append({"title": tag, "summary": "", "article_ids": ids})
-        if len(themes) == kind.max_themes:
-            break
+    top = [a for a in articles if a.ai_model_used != EXTRACTIVE_FALLBACK_MODEL]
     must_read = [
-        {"id": a.id, "why": (a.key_takeaways or [""])[0] or ""}
+        {"id": a.id, "title": "", "summary": "", "why": (a.key_takeaways or [""])[0] or ""}
         for a in top[: kind.max_must_read]
     ]
     high = sum(1 for a in articles if (a.relevance_score or 0) >= 8)
     return {
         "headline": f"{len(articles)} bài mới, {high} bài từ 8 điểm. (Tóm tắt tự động, AI không phản hồi.)",
         "trend": "",
-        "themes": themes,
         "must_read": must_read,
     }
 
@@ -233,7 +221,6 @@ async def generate_daily_briefing(
     by_id = {a.id: a for a in articles}
     prompt = BRIEFING_PROMPT.format(
         scope=kind.scope,
-        max_themes=kind.max_themes,
         max_must_read=kind.max_must_read,
         trend_instruction=TREND_INSTRUCTION if kind.with_trend else "",
         trend_field=' "trend": "...",' if kind.with_trend else "",
@@ -255,7 +242,7 @@ async def generate_daily_briefing(
             data = _clean_json_response(message_text(response))
             briefing = _validate_briefing(data, by_id, kind)
             if briefing is None:
-                raise ValueError("briefing JSON had no usable themes or picks")
+                raise ValueError("briefing JSON had no usable picks")
             ai_circuit_breaker.record_success(model_name)
             return briefing, model_name
         except Exception as err:
@@ -295,64 +282,48 @@ def format_briefing_messages(
     kind: BriefingKind = DAILY,
     since: Optional[datetime.datetime] = None,
 ) -> Tuple[List[str], Dict[str, Any]]:
-    """Main briefing, followed by as many messages as needed to list every article it didn't mention."""
+    """Main briefing (headline, trend, must-read cards), then as many messages as needed
+    to list every other article, each with a short description."""
     by_id = {a.id: a for a in articles}
     now = now or _local_now()
 
-    def source_link(a: Article) -> str:
-        name = escape_html(a.source.name if a.source else "Nguồn")
-        return f'<a href="{escape_html(a.url)}">{name}</a>'
+    def meta_line(a: Article) -> str:
+        score = a.relevance_score or 0
+        parts = [f"{score_dot(score)} <b>{score:.1f}</b>"]
+        if a.source:
+            parts.append(escape_html(a.source.name))
+        if a.reading_time_minutes:
+            parts.append(f"{a.reading_time_minutes} phút đọc")
+        return " · ".join(parts)
 
-    def build(themes: List[Dict[str, Any]], summary_limit: int) -> str:
+    def must_read_card(i: int, m: Dict[str, Any], with_summary: bool) -> str:
+        a = by_id[m["id"]]
+        # The LLM's translated title wins over a stored title that may still be English
+        title = escape_html(m.get("title") or a.vietnamese_title or a.title)
+        lines = [f'<b>{i}. <a href="{escape_html(a.url)}">{title}</a></b>', meta_line(a)]
+        if with_summary:
+            summary = m.get("summary") or short_description(a, 280)
+            if summary:
+                lines += ["", escape_html(_truncate(summary, 280))]
+        if m.get("why"):
+            lines.append(f"<i>→ {escape_html(_truncate(m['why'], 200))}</i>")
+        return "<blockquote>" + "\n".join(lines) + "</blockquote>"
+
+    def build(picks: List[Dict[str, Any]], with_summary: bool, rest_note: bool = True) -> str:
         body: List[str] = []
         if briefing.get("headline"):
             body += [f"<b>{escape_html(briefing['headline'])}</b>", ""]
 
         if briefing.get("trend"):
-            body += ["<b>XU HƯỚNG CỦA NGÀY</b>", f"<blockquote>{escape_html(briefing['trend'])}</blockquote>"]
+            body += ["📈 <b>XU HƯỚNG CỦA NGÀY</b>", f"<blockquote>{escape_html(briefing['trend'])}</blockquote>", ""]
 
-        if themes:
-            body.append("<b>HÔM NAY CÓ GÌ</b>" if kind.key == "daily" else "<b>CÓ GÌ MỚI</b>")
-            # One quote block per theme so each reads as its own card
-            for i, t in enumerate(themes, 1):
-                num = KEYCAPS[i - 1] if i <= len(KEYCAPS) else f"{i}."
-                card = [f"{num} <b>{escape_html(t['title'])}</b>"]
-                if t.get("summary"):
-                    summary = t["summary"]
-                    if len(summary) > summary_limit:
-                        summary = summary[: summary_limit - 1].rstrip() + "…"
-                    card.append(escape_html(summary))
-                    links = [source_link(by_id[aid]) for aid in t["article_ids"] if aid in by_id]
-                    if links:
-                        card.append("↳ " + " · ".join(links))
-                else:
-                    # Fallback themes have no prose: list titles instead
-                    for aid in t["article_ids"]:
-                        a = by_id[aid]
-                        card.append(f"• {escape_html(a.vietnamese_title or a.title)} ({source_link(a)})")
-                body.append("<blockquote>" + "\n".join(card) + "</blockquote>")
+        if picks:
+            body += [DIVIDER, "⭐ <b>ĐÁNG ĐỌC KỸ</b>", ""]
+            for i, m in enumerate(picks, 1):
+                body += [must_read_card(i, m, with_summary), ""]
 
-        if briefing.get("must_read"):
-            body.append("<b>ĐÁNG ĐỌC KỸ</b>")
-            for m in briefing["must_read"]:
-                a = by_id.get(m["id"])
-                if not a:
-                    continue
-                score = a.relevance_score or 0
-                # The LLM's translated title wins over a stored title that may still be English
-                title = escape_html(m.get("title") or a.vietnamese_title or a.title)
-                body.append(
-                    f'{score_dot(score)} <b>{score:.1f}</b> · <a href="{escape_html(a.url)}">{title}</a>'
-                )
-                if m.get("why"):
-                    body.append(f"<i>{escape_html(m['why'])}</i>")
-            body.append("")
-
-        mentioned = {i for t in themes for i in t["article_ids"]} | {
-            m["id"] for m in briefing.get("must_read", [])
-        }
-        rest = len(articles) - len(mentioned)
-        if rest > 0:
+        rest = len(articles) - len(picks)
+        if rest > 0 and rest_note:
             body.append(f"<i>Còn {rest} bài khác, xem danh sách bên dưới.</i>")
 
         text_only = _strip_tags("\n".join(body))
@@ -365,40 +336,49 @@ def format_briefing_messages(
         ]
         return "\n".join(header + body).strip()
 
-    # Stay under Telegram's message limit: shorten summaries first, then drop themes
-    themes = list(briefing.get("themes") or [])
-    msg = build(themes, 400)
-    for limit in (300, 200):
-        if len(msg) <= TELEGRAM_LIMIT:
-            break
-        msg = build(themes, limit)
-    while len(msg) > TELEGRAM_LIMIT and themes:
-        themes.pop()
-        msg = build(themes, 200)
+    # Stay under Telegram's message limit: drop pick summaries first, then move the
+    # lowest picks down into the full list below
+    picks = [m for m in briefing.get("must_read") or [] if m["id"] in by_id]
+    with_summary = True
+    msg = build(picks, with_summary)
+    if len(msg) > TELEGRAM_LIMIT:
+        with_summary = False
+        msg = build(picks, with_summary)
+    while len(msg) > TELEGRAM_LIMIT and picks:
+        picks.pop()
+        msg = build(picks, with_summary)
 
     reply_markup = {"inline_keyboard": [[{"text": "Mở TechPulse", "url": FRONTEND_URL}]]}
 
-    mentioned = {i for t in themes for i in t["article_ids"]} | {
-        m["id"] for m in briefing.get("must_read", [])
-    }
-    lines = []
+    picked = {m["id"] for m in picks}
+    items = []
     for a in articles:
-        if a.id in mentioned:
+        if a.id in picked:
             continue
-        score = a.relevance_score or 0
         title = escape_html(a.vietnamese_title or a.title)
-        lines.append(f'{score_dot(score)} <b>{score:.1f}</b> · <a href="{escape_html(a.url)}">{title}</a>')
+        item = f'{meta_line(a)}\n<a href="{escape_html(a.url)}">{title}</a>'
+        description = short_description(a)
+        if description:
+            item += f"\n<i>{escape_html(description)}</i>"
+        items.append(item)
+
+    if not items:
+        return [msg], reply_markup
+
+    heading = f"📋 <b>CÁC BÀI KHÁC ({len(items)})</b>"
+    # One message when everything fits; split only past Telegram's limit
+    single = build(picks, with_summary, rest_note=False) + "\n\n" + "\n\n".join([DIVIDER + "\n" + heading] + items)
+    if len(single) <= TELEGRAM_LIMIT:
+        return [single], reply_markup
 
     messages = [msg]
-    chunk = "<b>CÁC BÀI KHÁC</b>"
-    for line in lines:
-        if len(chunk) + 1 + len(line) > TELEGRAM_LIMIT:
+    chunk = heading
+    for item in items:
+        if len(chunk) + 2 + len(item) > TELEGRAM_LIMIT:
             messages.append(chunk)
-            chunk = line
-        else:
-            chunk += "\n" + line
-    if lines:
-        messages.append(chunk)
+            chunk = "📋 <b>CÁC BÀI KHÁC (tiếp)</b>"
+        chunk += "\n\n" + item
+    messages.append(chunk)
     return messages, reply_markup
 
 
@@ -421,7 +401,7 @@ async def dispatch_briefing(kind: BriefingKind, since: datetime.datetime) -> boo
         briefing, model_used = await generate_daily_briefing(articles, kind)
         messages, markup = format_briefing_messages(briefing, articles, now=now, kind=kind, since=since)
         logger.info(
-            f"{kind.title}: {len(articles)} articles, {len(briefing['themes'])} themes, "
+            f"{kind.title}: {len(articles)} articles, {len(briefing['must_read'])} picks, "
             f"model={model_used}, {len(messages)} messages"
         )
         # The "Mở TechPulse" button goes on the last message, under the full list
