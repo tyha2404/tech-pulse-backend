@@ -32,6 +32,11 @@ def message_text(response) -> str:
     """Return the first choice's text, raising a clear error on empty/malformed responses."""
     choices = getattr(response, "choices", None)
     if not choices or choices[0].message is None or not choices[0].message.content:
+        try:
+            raw = response.model_dump_json()
+        except Exception:
+            raw = repr(response)
+        logger.warning(f"Malformed completion from {getattr(response, 'model', '?')}: {raw[:2000]}")
         raise ValueError("Empty or malformed completion response")
     return choices[0].message.content.strip()
 
