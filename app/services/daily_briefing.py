@@ -24,6 +24,7 @@ from app.services.ai_analyzer import (
     EXTRACTIVE_FALLBACK_MODEL,
     _clean_json_response,
     get_ai_client,
+    message_text,
 )
 from app.services.circuit_breaker import ai_circuit_breaker
 from app.services.telegram_service import (
@@ -254,7 +255,7 @@ async def generate_daily_briefing(
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.3,
             )
-            data = _clean_json_response(response.choices[0].message.content.strip())
+            data = _clean_json_response(message_text(response))
             briefing = _validate_briefing(data, by_id, kind)
             if briefing is None:
                 raise ValueError("briefing JSON had no usable themes or picks")

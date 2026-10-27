@@ -20,9 +20,20 @@ def get_ai_client(timeout: float) -> AsyncOpenAI:
             base_url=settings.NINEROUTERS_BASE_URL,
             api_key=settings.NINEROUTERS_API_KEY,
             timeout=timeout,
+            # Failover and the circuit breaker handle errors; SDK retries honour the
+            # gateway's long retry-after (60s+) and stall the crawl's AI slots.
+            max_retries=1,
         )
         _ai_clients[timeout] = client
     return client
+
+
+def message_text(response) -> str:
+    """Return the first choice's text, raising a clear error on empty/malformed responses."""
+    choices = getattr(response, "choices", None)
+    if not choices or choices[0].message is None or not choices[0].message.content:
+        raise ValueError("Empty or malformed completion response")
+    return choices[0].message.content.strip()
 
 
 async def close_ai_clients():
@@ -196,7 +207,7 @@ Analyze the article according to your system instructions. Output ONLY the requi
                 ],
                 temperature=0.3,
             )
-            raw_answer = response.choices[0].message.content.strip()
+            raw_answer = message_text(response)
             data = _clean_json_response(raw_answer)
             analysis = AIAnalysisResult(**data)
             
@@ -270,7 +281,7 @@ FOLLOW_UPS:
                 messages=messages,
                 temperature=0.4,
             )
-            raw_text = response.choices[0].message.content.strip()
+            raw_text = message_text(response)
 
             suggested_followups = []
             reply_body = raw_text
@@ -365,7 +376,7 @@ Please generate the weekly tech radar digest JSON following the system instructi
                 ],
                 temperature=0.3,
             )
-            raw_text = response.choices[0].message.content.strip()
+            raw_text = message_text(response)
             data = _clean_json_response(raw_text)
             ai_circuit_breaker.record_success(model_name)
             return data
@@ -445,7 +456,7 @@ Output ONLY the JSON object.
                 ],
                 temperature=0.3,
             )
-            raw_text = response.choices[0].message.content.strip()
+            raw_text = message_text(response)
             data = _clean_json_response(raw_text)
             ai_circuit_breaker.record_success(model_name)
             return {

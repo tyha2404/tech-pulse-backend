@@ -5,7 +5,7 @@ import time
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Any
 import httpx
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.future import select
 from sqlalchemy.orm import load_only
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,7 +18,10 @@ from app.crawlers.article_crawler import (
     extract_clean_article_content,
     make_tz_aware,
 )
-from app.services.ai_analyzer import analyze_article_with_9router
+from app.services.ai_analyzer import (
+    EXTRACTIVE_FALLBACK_MODEL,
+    analyze_article_with_9router,
+)
 from app.services.clustering_service import assign_article_cluster
 from app.services.embedding_service import generate_article_embedding
 from app.core.config import settings
@@ -58,6 +61,76 @@ async def _fetch_source_items(source: Source) -> list[dict]:
         return []
 
 
+def apply_analysis(article: Article, analysis: Any, model_used: str) -> None:
+    """Copies an AIAnalysisResult onto an Article."""
+    article.is_processed = True
+    article.is_worth_reading = analysis.is_worth_reading
+    article.relevance_score = analysis.relevance_score
+    article.vietnamese_title = analysis.vietnamese_title
+    article.vietnamese_summary = analysis.vietnamese_summary
+    article.key_takeaways = analysis.key_takeaways
+    article.new_tech_stacks = [t.model_dump() for t in analysis.new_tech_stack]
+    article.tags = analysis.tags
+    article.target_audience = analysis.target_audience
+    article.architectural_tradeoffs = (
+        analysis.architectural_tradeoffs.model_dump()
+        if analysis.architectural_tradeoffs
+        else {}
+    )
+    article.nestjs_blueprint = (
+        analysis.nestjs_blueprint.model_dump() if analysis.nestjs_blueprint else {}
+    )
+    article.learning_path = (
+        analysis.learning_path.model_dump() if analysis.learning_path else {}
+    )
+    article.cluster_topic_key = analysis.cluster_topic_key
+    article.ai_model_used = model_used
+
+
+async def reanalyze_fallback_articles(batch_size: int = 40) -> int:
+    """Re-runs the LLM on articles saved with the extractive fallback (gateway was down),
+    which otherwise keep the flat 5.5 score and untranslated English text forever."""
+    from app.core.database import AsyncSessionLocal
+
+    async def analyze(article: Article):
+        async with _article_semaphore:
+            return await analyze_article_with_9router(
+                title=article.title,
+                content=article.raw_content or "",
+                url=article.url,
+            )
+
+    fixed = 0
+    async with AsyncSessionLocal() as db:
+        res = await db.execute(
+            select(Article)
+            .where(Article.ai_model_used == EXTRACTIVE_FALLBACK_MODEL)
+            .order_by(Article.id.desc())
+            .limit(batch_size)
+        )
+        articles = list(res.scalars().all())
+        chunk_size = max(1, settings.AI_MAX_CONCURRENCY)
+        for i in range(0, len(articles), chunk_size):
+            chunk = articles[i : i + chunk_size]
+            results = await asyncio.gather(*(analyze(a) for a in chunk))
+            chunk_fixed = 0
+            for article, (analysis, model_used) in zip(chunk, results):
+                if model_used == EXTRACTIVE_FALLBACK_MODEL:
+                    continue
+                apply_analysis(article, analysis, model_used)
+                # Old vector came from the untranslated text; embedding_backfill redoes it
+                article.embedding = None
+                chunk_fixed += 1
+            await db.commit()
+            fixed += chunk_fixed
+            if chunk_fixed == 0:
+                # Gateway still down; retry on the next run instead of hammering it
+                break
+    if fixed:
+        logger.info(f"Re-analyzed {fixed} articles that had used the extractive fallback")
+    return fixed
+
+
 async def _prepare_article(item: dict, source_id: int, run_ai: bool) -> Article:
     """Network-bound work for one feed item: body extraction, AI analysis, embedding.
     Touches no DB session, so many of these can run in parallel."""
@@ -86,30 +159,7 @@ async def _prepare_article(item: dict, source_id: int, run_ai: bool) -> Article:
             analysis, model_used = await analyze_article_with_9router(
                 title=article.title, content=full_content, url=article.url
             )
-            article.is_processed = True
-            article.is_worth_reading = analysis.is_worth_reading
-            article.relevance_score = analysis.relevance_score
-            article.vietnamese_title = analysis.vietnamese_title
-            article.vietnamese_summary = analysis.vietnamese_summary
-            article.key_takeaways = analysis.key_takeaways
-            article.new_tech_stacks = [t.model_dump() for t in analysis.new_tech_stack]
-            article.tags = analysis.tags
-            article.target_audience = analysis.target_audience
-            article.architectural_tradeoffs = (
-                analysis.architectural_tradeoffs.model_dump()
-                if analysis.architectural_tradeoffs
-                else {}
-            )
-            article.nestjs_blueprint = (
-                analysis.nestjs_blueprint.model_dump()
-                if analysis.nestjs_blueprint
-                else {}
-            )
-            article.learning_path = (
-                analysis.learning_path.model_dump() if analysis.learning_path else {}
-            )
-            article.cluster_topic_key = analysis.cluster_topic_key
-            article.ai_model_used = model_used
+            apply_analysis(article, analysis, model_used)
 
             # Semantic search vector (Module 4). Left empty when the gateway is down so
             # backfill_missing_embeddings can fill it later instead of storing a fake vector.
@@ -218,6 +268,10 @@ async def crawl_single_source(
             except IntegrityError:
                 # Same URL inserted concurrently by another source's crawl
                 logger.info(f"Skipping duplicate article {article.url}")
+                continue
+            except DBAPIError as e:
+                # A bad row (e.g. wrong embedding dimension) must not abort the whole source
+                logger.error(f"Skipping article {article.url}: {e.orig}")
                 continue
             if demoted_id:
                 for cand in recent_candidates:

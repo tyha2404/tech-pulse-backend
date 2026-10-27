@@ -10,6 +10,9 @@ from app.services.ai_analyzer import get_ai_client
 logger = logging.getLogger(__name__)
 
 
+EMBEDDING_DIM = 1536  # must match Vector(1536) in models.py
+
+
 def _pseudo_embedding(text: str, dim: int = 1536) -> List[float]:
     """
     Pure Python deterministic fallback embedding generator when remote embedding model
@@ -41,7 +44,7 @@ async def generate_text_embedding(
     meaning, so callers that persist or rank by similarity should pass False.
     """
     if not text or not text.strip():
-        return [0.0] * 1536 if allow_fallback else None
+        return [0.0] * EMBEDDING_DIM if allow_fallback else None
 
     clean_text = text.strip()[:4000]
 
@@ -50,13 +53,20 @@ async def generate_text_embedding(
         response = await client.embeddings.create(
             model=settings.EMBEDDING_MODEL,
             input=clean_text,
+            dimensions=EMBEDDING_DIM,
         )
         if response.data and len(response.data) > 0:
-            return response.data[0].embedding
+            vector = response.data[0].embedding
+            if len(vector) == EMBEDDING_DIM:
+                return vector
+            logger.warning(
+                f"Embedding model {settings.EMBEDDING_MODEL} returned {len(vector)} dims, "
+                f"expected {EMBEDDING_DIM}; discarding"
+            )
     except Exception as e:
         logger.warning(f"Embedding gateway unavailable: {e}")
 
-    return _pseudo_embedding(clean_text, dim=1536) if allow_fallback else None
+    return _pseudo_embedding(clean_text, dim=EMBEDDING_DIM) if allow_fallback else None
 
 
 async def generate_article_embedding(

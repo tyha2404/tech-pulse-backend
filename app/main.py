@@ -482,6 +482,17 @@ async def scheduled_embedding_backfill_job():
         logger.error(f"⏰ [Scheduler] Embedding backfill error: {e}")
 
 
+async def scheduled_reanalysis_job():
+    from app.services.crawl_service import reanalyze_fallback_articles
+
+    try:
+        await reanalyze_fallback_articles()
+    except asyncio.CancelledError:
+        return
+    except Exception as e:
+        logger.error(f"⏰ [Scheduler] Fallback re-analysis error: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Initialize DB schema
@@ -525,6 +536,13 @@ async def lifespan(app: FastAPI):
         "interval",
         minutes=settings.EMBEDDING_BACKFILL_INTERVAL_MINUTES,
         id="embedding_backfill",
+    )
+    # Re-score and translate articles that got the no-LLM extractive fallback
+    scheduler.add_job(
+        scheduled_reanalysis_job,
+        "interval",
+        minutes=settings.REANALYSIS_INTERVAL_MINUTES,
+        id="fallback_reanalysis",
     )
 
     # Telegram digests. Cron times are pinned to BRIEFING_TIMEZONE so they don't
