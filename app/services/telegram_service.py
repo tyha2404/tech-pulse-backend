@@ -291,7 +291,7 @@ async def send_telegram_message(
 
 
 async def send_urgent_alert(article: Any) -> bool:
-    """Send immediate alert for score >= 9.0 with rate limit protection"""
+    """Send immediate alert for score >= TELEGRAM_ALERT_THRESHOLD with rate limit protection"""
     if not _check_urgent_rate_limit():
         logger.info("Urgent alert throttled (exceeded max per hour)")
         return False

@@ -55,7 +55,7 @@ class Settings(BaseSettings):
     TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
     TELEGRAM_CHAT_ID: str = os.getenv("TELEGRAM_CHAT_ID", "")
     TELEGRAM_ALERT_THRESHOLD: float = float(
-        os.getenv("TELEGRAM_ALERT_THRESHOLD", "9.0")
+        os.getenv("TELEGRAM_ALERT_THRESHOLD", "8.0")
     )
     TELEGRAM_ALERT_MAX_PER_HOUR: int = int(
         os.getenv("TELEGRAM_ALERT_MAX_PER_HOUR", "5")
@@ -66,6 +66,8 @@ class Settings(BaseSettings):
     TELEGRAM_ALERT_MAX_PER_DAY: int = int(os.getenv("TELEGRAM_ALERT_MAX_PER_DAY", "3"))
 
     # End-of-day AI briefing (one Telegram message summarizing the last 24h)
+    # Only articles scoring at least this go into the scheduled briefings
+    BRIEFING_MIN_SCORE: float = float(os.getenv("BRIEFING_MIN_SCORE", "7.5"))
     BRIEFING_TIMEZONE: str = os.getenv("BRIEFING_TIMEZONE", "Asia/Ho_Chi_Minh")
     DAILY_BRIEFING_HOUR: int = int(os.getenv("DAILY_BRIEFING_HOUR", "22"))
     DAILY_BRIEFING_MINUTE: int = int(os.getenv("DAILY_BRIEFING_MINUTE", "0"))
@@ -73,6 +75,12 @@ class Settings(BaseSettings):
     BRIEFING_UPDATE_HOURS: str = os.getenv("BRIEFING_UPDATE_HOURS", "9,12,18")
     MORNING_ESPRESSO_ENABLED: bool = os.getenv("MORNING_ESPRESSO_ENABLED", "false").lower() in ("true", "1", "yes")
     DISCORD_WEBHOOK_URL: str = os.getenv("DISCORD_WEBHOOK_URL", "")
+    # Self-check that alerts Telegram when the AI gateway or crawling breaks
+    HEALTH_CHECK_ENABLED: bool = os.getenv("HEALTH_CHECK_ENABLED", "true").lower() in ("true", "1", "yes")
+    HEALTH_CHECK_INTERVAL_MINUTES: int = int(os.getenv("HEALTH_CHECK_INTERVAL_MINUTES", "15"))
+    HEALTH_WINDOW_MINUTES: int = int(os.getenv("HEALTH_WINDOW_MINUTES", "60"))
+    HEALTH_STALE_HOURS: int = int(os.getenv("HEALTH_STALE_HOURS", "6"))
+    HEALTH_REMIND_HOURS: int = int(os.getenv("HEALTH_REMIND_HOURS", "6"))
     FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://127.0.0.1:5174")
 
     @property

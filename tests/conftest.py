@@ -20,3 +20,13 @@ def reset_ai_client_cache():
     _ai_clients.clear()
     yield
     _ai_clients.clear()
+
+
+@pytest.fixture(autouse=True)
+def reset_urgent_alert_rate_limit():
+    """Clear the in-memory urgent-alert rate limiter so earlier tests don't exhaust the daily cap."""
+    from app.services.telegram_service import _urgent_alert_timestamps
+
+    _urgent_alert_timestamps.clear()
+    yield
+    _urgent_alert_timestamps.clear()

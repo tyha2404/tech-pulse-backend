@@ -6,7 +6,10 @@ from app.services.crawl_service import trigger_smart_article_notifications
 
 @pytest.fixture
 def instant_mode_all():
-    with patch("app.services.crawl_service.settings.TELEGRAM_INSTANT_MODE", "all"):
+    # Elite/cluster alerts only fire below the urgent threshold, so pin it above these scores
+    with patch("app.services.crawl_service.settings.TELEGRAM_INSTANT_MODE", "all"), patch(
+        "app.services.crawl_service.settings.TELEGRAM_ALERT_THRESHOLD", 9.0
+    ):
         yield
 
 
@@ -53,7 +56,7 @@ async def test_trigger_cluster_breaking_notification(instant_mode_all):
 @pytest.mark.asyncio
 async def test_urgent_only_mode_holds_non_urgent_articles_for_briefing():
     """Default mode: articles below the urgent threshold are not pushed one by one."""
-    article = Article(id=101, title="Elite but not urgent", relevance_score=8.5, url="https://test.com")
+    article = Article(id=101, title="Elite but not urgent", relevance_score=7.8, url="https://test.com")
     with patch("app.services.crawl_service.settings.TELEGRAM_INSTANT_MODE", "urgent_only"), \
          patch("app.services.telegram_service.send_telegram_message", new_callable=AsyncMock) as mock_send:
         await trigger_smart_article_notifications(article, cluster_sources=["A", "B", "C"])

@@ -275,7 +275,7 @@ async def test_scheduled_update_only_covers_new_articles_and_skips_when_empty():
             [
                 Article(title="Before 9h", url="https://e/1", relevance_score=9.0,
                         created_at=utc(now.replace(hour=8, minute=30)), **common),
-                Article(title="After 9h", url="https://e/2", relevance_score=7.0,
+                Article(title="After 9h", url="https://e/2", relevance_score=8.0,
                         created_at=utc(now.replace(hour=10)), **common),
             ]
         )

@@ -141,7 +141,7 @@ def previous_slot_start(now: datetime.datetime, hours: List[int]) -> datetime.da
 
 
 async def collect_briefing_articles(db, since: datetime.datetime) -> List[Article]:
-    """AI-analyzed, canonical, visible articles created since `since`, best first."""
+    """AI-analyzed, canonical, visible articles scoring >= BRIEFING_MIN_SCORE since `since`, best first."""
     res = await db.execute(
         select(Article)
         .options(selectinload(Article.source))
@@ -150,6 +150,7 @@ async def collect_briefing_articles(db, since: datetime.datetime) -> List[Articl
             Article.is_processed == True,
             Article.is_canonical == True,
             Article.is_hidden == False,
+            Article.relevance_score >= settings.BRIEFING_MIN_SCORE,
         )
         .order_by(Article.relevance_score.desc(), Article.id.desc())
     )

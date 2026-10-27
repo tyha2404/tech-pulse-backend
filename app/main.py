@@ -493,6 +493,17 @@ async def scheduled_reanalysis_job():
         logger.error(f"⏰ [Scheduler] Fallback re-analysis error: {e}")
 
 
+async def scheduled_health_check_job():
+    from app.services.health_monitor import run_health_check
+
+    try:
+        await run_health_check()
+    except asyncio.CancelledError:
+        return
+    except Exception as e:
+        logger.error(f"⏰ [Scheduler] Health check error: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Initialize DB schema
@@ -544,6 +555,13 @@ async def lifespan(app: FastAPI):
         minutes=settings.REANALYSIS_INTERVAL_MINUTES,
         id="fallback_reanalysis",
     )
+    if settings.HEALTH_CHECK_ENABLED:
+        scheduler.add_job(
+            scheduled_health_check_job,
+            "interval",
+            minutes=settings.HEALTH_CHECK_INTERVAL_MINUTES,
+            id="health_check",
+        )
 
     # Telegram digests. Cron times are pinned to BRIEFING_TIMEZONE so they don't
     # drift when the server (e.g. a Docker container) runs in UTC.
