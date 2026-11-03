@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse
 
+from app.crawlers.url_guard import guarded_client
+
 headers = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
@@ -20,7 +22,7 @@ def get_http_client() -> httpx.AsyncClient:
     """Shared client so feed and article fetches reuse pooled connections."""
     global _http_client
     if _http_client is None or _http_client.is_closed:
-        _http_client = httpx.AsyncClient(
+        _http_client = guarded_client(
             timeout=10.0, follow_redirects=True, headers=headers
         )
     return _http_client
@@ -125,7 +127,7 @@ async def fetch_json_feed(feed_url: str) -> list[dict]:
     return items
 
 
-async def fetch_sitemap_feed(sitemap_url: str) -> list[dict]:
+async def fetch_sitemap_feed(sitemap_url: str, _depth: int = 0) -> list[dict]:
     """Parse sitemap.xml or sitemapindex.xml to extract recent article URLs"""
     resp = await get_http_client().get(sitemap_url)
     resp.raise_for_status()
@@ -142,8 +144,9 @@ async def fetch_sitemap_feed(sitemap_url: str) -> list[dict]:
         if sitemap_tags:
             # fetch the first child sitemap
             first_loc = sitemap_tags[0].find("loc")
-            if first_loc and first_loc.get_text():
-                return await fetch_sitemap_feed(first_loc.get_text().strip())
+            # Index files can point at each other; real sites nest at most a couple of levels
+            if first_loc and first_loc.get_text() and _depth < 3:
+                return await fetch_sitemap_feed(first_loc.get_text().strip(), _depth + 1)
 
     for u in url_tags[:15]:
         loc_tag = u.find("loc")

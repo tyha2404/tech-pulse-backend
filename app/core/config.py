@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from urllib.parse import urlsplit
 from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -9,6 +10,9 @@ ENV_PATH = BASE_DIR / ".env"
 
 # Explicitly load .env into os.environ
 load_dotenv(dotenv_path=ENV_PATH, override=True)
+
+# Frontends this repo ships, always allowed to call the API (localhost twins are added below)
+DEFAULT_FRONTEND_ORIGINS = ("http://127.0.0.1:5174", "http://127.0.0.1:5173")
 
 
 class Settings(BaseSettings):
@@ -101,6 +105,28 @@ class Settings(BaseSettings):
             if h.isdigit() and 0 <= int(h) <= 23 and int(h) != self.DAILY_BRIEFING_HOUR:
                 hours.append(int(h))
         return sorted(set(hours))
+
+    @property
+    def cors_origins_list(self) -> list[str]:
+        """Browser origins allowed to call the API: FRONTEND_URL plus the local frontends."""
+        candidates = [
+            self.FRONTEND_URL,
+            # run.sh / pm2 frontend (5174) and the docker nginx frontend (5173)
+            *DEFAULT_FRONTEND_ORIGINS,
+        ]
+        origins = []
+        for raw in candidates:
+            # FRONTEND_URL may carry a path; a browser Origin is only scheme://host[:port]
+            parts = urlsplit(raw.strip())
+            if not parts.scheme or not parts.netloc:
+                continue
+            o = f"{parts.scheme}://{parts.netloc}"
+            origins.append(o)
+            # The same dev server is reachable as localhost and 127.0.0.1
+            for a, b in (("//localhost", "//127.0.0.1"), ("//127.0.0.1", "//localhost")):
+                if a in o:
+                    origins.append(o.replace(a, b))
+        return list(dict.fromkeys(origins))
 
     @property
     def DATABASE_URL(self) -> str:

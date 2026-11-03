@@ -1,6 +1,4 @@
 import pytest
-import ipaddress
-from urllib.parse import urlparse
 from unittest.mock import patch, AsyncMock, MagicMock
 from app.crawlers.article_crawler import (
     extract_clean_article_content,
@@ -8,42 +6,27 @@ from app.crawlers.article_crawler import (
     fetch_json_feed,
 )
 from app.crawlers.feed_discoverer import discover_feed_url
+from app.crawlers.url_guard import UnsafeURLError, ensure_public_url
 
 
-def is_safe_external_url(url: str) -> bool:
+@pytest.mark.asyncio
+async def test_ssrf_detector_blocks_internal_and_cloud_metadata(ssrf_target_urls):
     """
-    Security validation utility: Returns True if URL does not point to internal/loopback/cloud metadata
-    """
-    try:
-        parsed = urlparse(url)
-        hostname = parsed.hostname
-        if not hostname:
-            return False
-        
-        # Check standard dangerous hostnames
-        if hostname.lower() in ["localhost", "127.0.0.1", "0.0.0.0", "::1"]:
-            return False
-
-        # Check IP ranges
-        ip = ipaddress.ip_address(hostname)
-        if ip.is_private or ip.is_loopback or ip.is_reserved or ip.is_link_local:
-            return False
-        return True
-    except ValueError:
-        # Not a raw IP, typical valid domain name
-        return True
-
-
-def test_ssrf_detector_blocks_internal_and_cloud_metadata(ssrf_target_urls):
-    """
-    Red Team test: Ensure internal IPs, loopback, and cloud metadata (169.254.169.254) are flagged
+    Red Team test: Ensure internal IPs, loopback, and cloud metadata (169.254.169.254) are rejected
+    by the guard the crawler's HTTP clients actually run on every request and redirect hop
     """
     for bad_url in ssrf_target_urls:
-        assert is_safe_external_url(bad_url) is False, f"Failed to detect SSRF target: {bad_url}"
+        with pytest.raises(UnsafeURLError):
+            await ensure_public_url(bad_url)
 
-    # Valid external URL must pass
-    assert is_safe_external_url("https://aws.amazon.com/blogs/aws/") is True
-    assert is_safe_external_url("https://news.ycombinator.com") is True
+
+@pytest.mark.asyncio
+async def test_crawler_fetches_do_not_reach_internal_addresses(ssrf_target_urls):
+    """The crawler entry points must refuse internal targets before any request leaves."""
+    for bad_url in ssrf_target_urls:
+        assert await extract_clean_article_content(bad_url) == ""
+        with pytest.raises(UnsafeURLError):
+            await fetch_rss_feed(bad_url)
 
 
 def test_stored_xss_sanitization_in_article_content():

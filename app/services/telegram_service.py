@@ -217,7 +217,7 @@ def format_espresso_digest_message(
         score = art.get("relevance_score", 0.0) or 0.0
         art_url = art.get("url") or FRONTEND_URL
         lines.append(f"<b>{idx}. {art_title}</b> (⭐ {score:.1f})")
-        lines.append(f'👉 <a href="{art_url}">Xem bài viết</a>')
+        lines.append(f'👉 <a href="{escape_html(art_url)}">Xem bài viết</a>')
         lines.append("")
 
     lines.append(f"📱 <i>Khám phá toàn bộ bảng tin tại: {FRONTEND_URL}</i>")

@@ -1,7 +1,8 @@
 import re
-import httpx
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
+
+from app.crawlers.url_guard import guarded_client
 
 headers = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
@@ -21,7 +22,7 @@ async def discover_feed_url(target_url: str) -> tuple[str, str]:
     base_url = f"{parsed_target.scheme}://{parsed_target.netloc}"
 
     try:
-        async with httpx.AsyncClient(
+        async with guarded_client(
             timeout=10.0, follow_redirects=True, headers=headers
         ) as client:
             resp = await client.get(target_url)

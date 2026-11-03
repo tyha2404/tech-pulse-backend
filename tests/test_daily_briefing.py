@@ -325,3 +325,73 @@ async def test_scheduled_update_only_covers_new_articles_and_skips_when_empty():
             assert await daily_briefing.dispatch_scheduled_update() is False
         send.assert_not_called()
     await engine.dispose()
+
+
+def test_validate_keeps_highlights_capped_per_kind():
+    by_id = {1: _article(1, 9.0)}
+    data = {
+        "highlights": ["A", "", "  ", {"x": 1}, "B", "C", "D", "E", "F", "G"],
+        "must_read": [{"id": 1, "why": "b"}],
+    }
+    assert _validate_briefing(data, by_id, UPDATE)["highlights"] == ["A", "B", "C", "D"]
+    assert _validate_briefing(data, by_id, DAILY)["highlights"] == ["A", "B", "C", "D", "E", "F"]
+    assert _validate_briefing({"highlights": "không phải list", **data}, by_id, UPDATE)["highlights"] == ["A", "B", "C", "D"]
+    assert _validate_briefing({"must_read": [{"id": 1}]}, by_id)["highlights"] == []
+
+
+@pytest.mark.asyncio
+async def test_llm_is_asked_for_highlights_across_all_articles():
+    articles = [_article(1, 9.0), _article(2, 6.0)]
+    llm = _fake_llm(
+        json.dumps({"headline": "h", "highlights": ["Ý tổng hợp"], "must_read": [{"id": 1, "why": "w"}]})
+    )
+    with patch("app.services.ai_analyzer.AsyncOpenAI", llm):
+        briefing, _ = await generate_daily_briefing(articles, UPDATE)
+    prompt = llm.return_value.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+    assert '"highlights"' in prompt and "TẤT CẢ các bài" in prompt and "tối đa 4 ý" in prompt
+    assert briefing["highlights"] == ["Ý tổng hợp"]
+
+
+def test_highlights_section_sits_before_must_read_and_is_escaped():
+    articles = [_article(1, 9.0), _article(2, 7.0)]
+    briefing = {
+        "headline": "H",
+        "highlights": ["Postgres <18> ra mắt", "Hai bài về AI agent"],
+        "must_read": [{"id": 1, "why": "W"}],
+    }
+    now = datetime.datetime(2026, 10, 23, 12, 0, tzinfo=VN)
+    msg, _ = format_daily_briefing_message(briefing, articles, now=now, kind=UPDATE, since=now)
+    assert "TỔNG HỢP NỔI BẬT" in msg
+    assert "• Postgres &lt;18&gt; ra mắt\n• Hai bài về AI agent" in msg
+    assert msg.index("TỔNG HỢP NỔI BẬT") < msg.index("ĐÁNG ĐỌC KỸ")
+
+    no_highlights, _ = format_daily_briefing_message({**briefing, "highlights": []}, articles, now=now)
+    assert "TỔNG HỢP NỔI BẬT" not in no_highlights
+
+
+def test_fallback_highlights_group_by_tag_and_skip_untranslated():
+    articles = [
+        _article(1, 9.0, tags=["AI"], title="English only"),
+        _article(2, 8.5, tags=["AI"]),
+        _article(3, 8.0, tags=["AI", "Backend"]),
+        _article(4, 7.0, tags=["Postgres"]),
+    ]
+    articles[0].ai_model_used = "extractive-fallback"
+    out = fallback_briefing(articles, UPDATE)
+    assert out["highlights"] == ["AI (2 bài): Tóm tắt bài 2.", "Postgres (1 bài): Tóm tắt bài 4."]
+
+
+def test_highlights_dropped_only_when_nothing_else_fits():
+    articles = [_article(i, 8.0) for i in range(1, 4)]
+    briefing = {
+        "headline": "x" * 3000,
+        "highlights": ["Ý nổi bật " * 30] * 6,
+        "must_read": [{"id": 1, "why": "W"}],
+    }
+    messages, _ = format_briefing_messages(briefing, articles, now=NOW)
+    assert all(len(m) <= TELEGRAM_LIMIT for m in messages)
+    assert "TỔNG HỢP NỔI BẬT" not in messages[0]
+
+    briefing["headline"] = "Ngắn"
+    messages, _ = format_briefing_messages(briefing, articles, now=NOW)
+    assert "TỔNG HỢP NỔI BẬT" in messages[0] and "ĐÁNG ĐỌC KỸ" in messages[0]

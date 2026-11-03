@@ -31,6 +31,7 @@ from app.schemas.schemas import (
     MarkdownExportResponse,
 )
 from app.crawlers.feed_discoverer import discover_feed_url
+from app.crawlers.url_guard import UnsafeURLError, ensure_public_url
 from app.crawlers.article_crawler import (
     fetch_rss_feed,
     fetch_hacker_news,
@@ -49,10 +50,11 @@ from app.services.ai_analyzer import (
 )
 from app.services.circuit_breaker import ai_circuit_breaker
 from app.core.config import settings
+from app.core.security import require_api_access
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_api_access)])
 
 # Heavy columns that list/ranking endpoints never return; raiseload makes any
 # accidental access fail loudly instead of silently re-fetching per row
@@ -110,6 +112,7 @@ async def test_source_url(
     target_url: str = Query(..., description="URL website, RSS, JSON Feed, or Sitemap"),
 ):
     try:
+        await ensure_public_url(target_url)
         detected_type, feed_or_url = await discover_feed_url(target_url)
         if detected_type == "hn":
             items = await fetch_hacker_news()
@@ -143,6 +146,13 @@ async def test_source_url(
 
 @router.post("/sources", response_model=SourceResponse)
 async def create_source(payload: SourceCreate, db: AsyncSession = Depends(get_db)):
+    try:
+        await ensure_public_url(payload.url)
+        if payload.feed_url:
+            await ensure_public_url(payload.feed_url)
+    except UnsafeURLError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
     existing = await db.execute(select(Source).where(Source.url == payload.url))
     if existing.scalar_one_or_none():
         raise HTTPException(

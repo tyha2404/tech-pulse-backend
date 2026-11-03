@@ -1,4 +1,5 @@
-"""Telegram briefings: a short must-read list plus every other article with a one-line description.
+"""Telegram briefings: highlights synthesized across every article in the window, a short
+must-read list, then every other article with a one-line description.
 
 Two kinds run on a schedule (BRIEFING_TIMEZONE):
 - short updates at BRIEFING_UPDATE_HOURS (default 9, 12, 18), each covering only the
@@ -46,6 +47,8 @@ class BriefingKind:
     title: str
     emoji: str
     max_must_read: int
+    # Bullets in the "Tổng hợp nổi bật" section, synthesized across every article
+    max_highlights: int
     # Describes the briefing to the LLM
     scope: str
     # Super summary also asks for the day's single biggest trend
@@ -59,6 +62,7 @@ UPDATE = BriefingKind(
     title="Cập nhật",
     emoji="📰",
     max_must_read=3,
+    max_highlights=4,
     scope="bản cập nhật nhanh giữa ngày, chỉ gồm các bài mới kể từ lần cập nhật trước",
     with_trend=False,
     send_when_empty=False,
@@ -69,6 +73,7 @@ DAILY = BriefingKind(
     title="Siêu tổng hợp cuối ngày",
     emoji="🌙",
     max_must_read=5,
+    max_highlights=6,
     scope="bản siêu tổng hợp cuối ngày cho toàn bộ 24 giờ qua",
     with_trend=True,
     send_when_empty=True,
@@ -80,20 +85,23 @@ Dưới đây là các bài đã được chấm điểm (JSON). Hãy:
    - "title": tiêu đề tiếng Việt ngắn gọn (dịch nếu tiêu đề gốc là tiếng Anh hoặc ngôn ngữ khác);
    - "summary": 1-2 câu nói bài viết nói về điều gì, cụ thể và có số liệu/tên riêng nếu có;
    - "why": 1 câu nêu vì sao kỹ sư Backend & AI nên đọc (tác động thực tế, không chung chung).
-2. Viết "headline": một câu mở đầu tóm tắt điểm chính của đợt tin này.{trend_instruction}
+2. Viết "headline": một câu mở đầu tóm tắt điểm chính của đợt tin này.
+3. Viết "highlights": tối đa {max_highlights} ý tổng hợp nội dung nổi bật của TẤT CẢ các bài trong đợt
+   (không chỉ các bài đáng đọc kỹ). Gom các bài cùng chủ đề vào một ý; mỗi ý 1-2 câu, nêu cụ thể
+   sự kiện, con số, tên sản phẩm/công ty; không lặp lại "headline"; ý quan trọng nhất đứng trước.{trend_instruction}
 
 Toàn bộ bằng tiếng Việt tự nhiên, ngắn gọn, không dùng ký tự Trung/Nhật; dữ liệu đầu vào có thể còn
 tiếng Anh, hãy dịch sang tiếng Việt (giữ nguyên tên riêng, tên sản phẩm và thuật ngữ kỹ thuật thông dụng).
 Chỉ dùng id có trong dữ liệu.
 Chỉ trả về JSON đúng dạng:
-{{"headline": "...",{trend_field}
+{{"headline": "...", "highlights": ["...", "..."],{trend_field}
   "must_read": [{{"id": 1, "title": "...", "summary": "...", "why": "..."}}]}}
 
 DỮ LIỆU:
 {articles_json}"""
 
 TREND_INSTRUCTION = """
-3. Viết "trend": 2-3 câu về xu hướng lớn nhất xuyên suốt cả ngày,
+4. Viết "trend": 2-3 câu về xu hướng lớn nhất xuyên suốt cả ngày,
    và một gợi ý hành động cụ thể cho kỹ sư Backend."""
 
 
@@ -190,8 +198,15 @@ def _validate_briefing(
 
     if not must_read:
         return None
+    raw_highlights = data.get("highlights")
+    highlights = [
+        str(h).strip()
+        for h in (raw_highlights if isinstance(raw_highlights, list) else [])
+        if isinstance(h, (str, int, float)) and str(h).strip()
+    ]
     return {
         "headline": str(data.get("headline") or ""),
+        "highlights": highlights[: kind.max_highlights],
         "trend": str(data.get("trend") or "") if kind.with_trend else "",
         "must_read": must_read[: kind.max_must_read],
     }
@@ -209,9 +224,26 @@ def fallback_briefing(articles: List[Article], kind: BriefingKind = DAILY) -> Di
     high = sum(1 for a in articles if (a.relevance_score or 0) >= 8)
     return {
         "headline": f"{len(articles)} bài mới, {high} bài từ 8 điểm. (Tóm tắt tự động, AI không phản hồi.)",
+        "highlights": fallback_highlights(top, kind.max_highlights),
         "trend": "",
         "must_read": must_read,
     }
+
+
+def fallback_highlights(articles: List[Article], limit: int) -> List[str]:
+    """No-LLM highlights: the most common tags, each with its best article's first summary
+    sentence. Takes only LLM-analyzed articles, whose summaries are already Vietnamese."""
+    groups: Dict[str, List[Article]] = {}
+    for a in articles:  # best first, so each group's first article is its top one
+        tag = next((t for t in (a.tags or []) if t), None)
+        if tag:
+            groups.setdefault(tag, []).append(a)
+    ranked = sorted(groups.items(), key=lambda kv: -len(kv[1]))[:limit]
+    highlights = []
+    for tag, group in ranked:
+        description = short_description(group[0], 160)
+        highlights.append(f"{tag} ({len(group)} bài): {description}" if description else f"{tag}: {len(group)} bài")
+    return highlights
 
 
 async def generate_daily_briefing(
@@ -222,6 +254,7 @@ async def generate_daily_briefing(
     prompt = BRIEFING_PROMPT.format(
         scope=kind.scope,
         max_must_read=kind.max_must_read,
+        max_highlights=kind.max_highlights,
         trend_instruction=TREND_INSTRUCTION if kind.with_trend else "",
         trend_field=' "trend": "...",' if kind.with_trend else "",
         articles_json=json.dumps(
@@ -309,10 +342,17 @@ def format_briefing_messages(
             lines.append(f"<i>→ {escape_html(_truncate(m['why'], 200))}</i>")
         return "<blockquote>" + "\n".join(lines) + "</blockquote>"
 
-    def build(picks: List[Dict[str, Any]], with_summary: bool, rest_note: bool = True) -> str:
+    def build(
+        picks: List[Dict[str, Any]], with_summary: bool, rest_note: bool = True, with_highlights: bool = True
+    ) -> str:
         body: List[str] = []
         if briefing.get("headline"):
             body += [f"<b>{escape_html(briefing['headline'])}</b>", ""]
+
+        highlights = briefing.get("highlights") or []
+        if highlights and with_highlights:
+            bullets = "\n".join(f"• {escape_html(_truncate(h, 260))}" for h in highlights)
+            body += ["🧭 <b>TỔNG HỢP NỔI BẬT</b>", f"<blockquote>{bullets}</blockquote>", ""]
 
         if briefing.get("trend"):
             body += ["📈 <b>XU HƯỚNG CỦA NGÀY</b>", f"<blockquote>{escape_html(briefing['trend'])}</blockquote>", ""]
@@ -337,9 +377,10 @@ def format_briefing_messages(
         return "\n".join(header + body).strip()
 
     # Stay under Telegram's message limit: drop pick summaries first, then move the
-    # lowest picks down into the full list below
+    # lowest picks down into the full list below, and only then drop the highlights
     picks = [m for m in briefing.get("must_read") or [] if m["id"] in by_id]
     with_summary = True
+    with_highlights = True
     msg = build(picks, with_summary)
     if len(msg) > TELEGRAM_LIMIT:
         with_summary = False
@@ -347,6 +388,9 @@ def format_briefing_messages(
     while len(msg) > TELEGRAM_LIMIT and picks:
         picks.pop()
         msg = build(picks, with_summary)
+    if len(msg) > TELEGRAM_LIMIT:
+        with_highlights = False
+        msg = build(picks, with_summary, with_highlights=with_highlights)
 
     reply_markup = {"inline_keyboard": [[{"text": "Mở TechPulse", "url": FRONTEND_URL}]]}
 
@@ -367,7 +411,7 @@ def format_briefing_messages(
 
     heading = f"📋 <b>CÁC BÀI KHÁC ({len(items)})</b>"
     # One message when everything fits; split only past Telegram's limit
-    single = build(picks, with_summary, rest_note=False) + "\n\n" + "\n\n".join([DIVIDER + "\n" + heading] + items)
+    single = build(picks, with_summary, rest_note=False, with_highlights=with_highlights) + "\n\n" + "\n\n".join([DIVIDER + "\n" + heading] + items)
     if len(single) <= TELEGRAM_LIMIT:
         return [single], reply_markup
 
