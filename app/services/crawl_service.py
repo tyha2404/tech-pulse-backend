@@ -87,9 +87,44 @@ def apply_analysis(article: Article, analysis: Any, model_used: str) -> None:
     article.ai_model_used = model_used
 
 
+# Backoff for the re-analysis job: each run that fixes nothing doubles the wait
+# (capped), so a dead gateway isn't retried every few minutes forever.
+_REANALYSIS_MAX_BACKOFF_SEC = 6 * 3600
+_reanalysis_failures = 0
+_reanalysis_next_allowed = 0.0
+
+
+def _reanalysis_backoff_seconds(failures: int) -> float:
+    base = max(1, settings.REANALYSIS_INTERVAL_MINUTES) * 60
+    return min(base * (2 ** max(0, failures - 1)), _REANALYSIS_MAX_BACKOFF_SEC)
+
+
 async def reanalyze_fallback_articles(batch_size: int = 40) -> int:
     """Re-runs the LLM on articles saved with the extractive fallback (gateway was down),
-    which otherwise keep the flat 5.5 score and untranslated English text forever."""
+    which otherwise keep the flat 5.5 score and untranslated English text forever.
+    Backs off exponentially while the gateway keeps failing."""
+    global _reanalysis_failures, _reanalysis_next_allowed
+    if time.time() < _reanalysis_next_allowed:
+        return 0
+    fixed = await _reanalyze_fallback_batch(batch_size)
+    if fixed:
+        _reanalysis_failures = 0
+        _reanalysis_next_allowed = 0.0
+    elif _reanalysis_last_had_work:
+        _reanalysis_failures += 1
+        delay = _reanalysis_backoff_seconds(_reanalysis_failures)
+        _reanalysis_next_allowed = time.time() + delay
+        logger.warning(
+            f"Re-analysis fixed nothing ({_reanalysis_failures} in a row); next try in {int(delay // 60)} min"
+        )
+    return fixed
+
+
+_reanalysis_last_had_work = False
+
+
+async def _reanalyze_fallback_batch(batch_size: int) -> int:
+    global _reanalysis_last_had_work
     from app.core.database import AsyncSessionLocal
 
     async def analyze(article: Article):
@@ -109,6 +144,7 @@ async def reanalyze_fallback_articles(batch_size: int = 40) -> int:
             .limit(batch_size)
         )
         articles = list(res.scalars().all())
+        _reanalysis_last_had_work = bool(articles)
         chunk_size = max(1, settings.AI_MAX_CONCURRENCY)
         for i in range(0, len(articles), chunk_size):
             chunk = articles[i : i + chunk_size]
