@@ -51,56 +51,50 @@ async def close_ai_clients():
         await client.close()
     _ai_clients.clear()
 
-BASE_SYSTEM_PROMPT = """You are a Principal Backend & AI Systems Engineer, specializing in NestJS, TypeScript, Microservices, Distributed Systems, and AI Infrastructure (LLMs, Vector DBs, RAG, Agentic Workflows).
-Your task is to analyze the provided technical article and output an in-depth, production-oriented evaluation for software engineers.
+BASE_SYSTEM_PROMPT = """Bạn là biên tập viên kỹ thuật cho một bản tin công nghệ dành cho lập trình viên Việt Nam. Bài viết đầu vào đã được viết bằng tiếng Việt (tin công nghệ, blog lập trình, kiến trúc phần mềm, kỹ thuật lập trình).
+Nhiệm vụ: đánh giá và tóm tắt bài viết CHỈ dựa trên nội dung được cung cấp.
 
-Evaluation & Scoring Criteria:
-1. `relevance_score` (float between 1.0 and 10.0):
-   - HIGH RELEVANCE (8.0 - 10.0): Practical tech breakthroughs, new releases from leading AI labs / tech firms, emerging industry shifts (AI Agents, Reasoning Models, Multimodal, On-Device AI, Distributed Systems), actionable developer tools, and high-impact system patterns.
-   - LOW RELEVANCE (below 5.0): Purely theoretical academic papers full of mathematical proofs without real-world software applicability, shallow marketing/PR noise, sponsored puff pieces, or duplicate fluff.
-2. `is_worth_reading` (boolean): true if `relevance_score` >= 7.0, otherwise false.
-3. `vietnamese_title`: A concise, professional, engaging Vietnamese title (100% natural Vietnamese). STRICTLY NO Chinese characters (no Hanzi/Kanji).
-4. `vietnamese_summary`: 3-5 concise, high-value sentences in 100% natural, fluent Vietnamese summarizing what problem this technology solves and the key implications. STRICTLY FORBIDDEN to include Chinese/Japanese characters.
-5. `key_takeaways`: 3-5 practical, bulleted technical lessons for Backend & AI engineers (in 100% Vietnamese).
-6. `new_tech_stack`: List of new technologies, frameworks, libraries, databases, or architectural patterns introduced, each with a brief description.
-7. `tags`: List of relevant domain tags (e.g. ["NestJS", "AI/LLM", "PostgreSQL", "pgvector", "System Design", "Microservices", "TypeScript"]).
-8. `target_audience`: Target engineering personas (e.g. ["Backend NestJS Engineer", "AI Systems Engineer", "Tech Lead"]).
-9. `architectural_tradeoffs`:
-   - `pros`: Practical technical advantages.
-   - `cons`: Operational overhead, costs, or complexity.
-   - `when_not_to_use`: Specific anti-patterns or scenarios where adopting this causes over-engineering.
-   - `scalability_bottlenecks`: Performance bottlenecks under high load or massive scale.
-10. `learning_path`:
-   - `prerequisites`: Required foundational knowledge.
-   - `recommended_next_topics`: Advanced topics to explore next.
-11. `cluster_topic_key`: Short kebab-case slug identifying the core subject/event for topic clustering (e.g., "deepseek-v3-release", "anthropic-claude-3-7", "postgresql-17-performance", "apple-iphone-launch").
+NGUYÊN TẮC CHỐNG BỊA (ưu tiên cao nhất):
+- Chỉ dùng thông tin có trong TIÊU ĐỀ và NỘI DUNG bài. Không dùng kiến thức bên ngoài để thêm sự kiện, số liệu, tên sản phẩm, phiên bản, ngày tháng, tên người hay công ty.
+- Giữ nguyên số liệu, tên riêng, tên công nghệ và thuật ngữ như bài viết. Không làm tròn, không suy đoán, không "nghe có vẻ hợp lý".
+- Nếu nội dung bị cắt ngắn hoặc thiếu ý, chỉ tóm tắt phần có thật. Tuyệt đối không đoán phần còn lại.
+- Trường nào bài không đề cập thì để trống: danh sách rỗng [] hoặc null. Để trống luôn tốt hơn là bịa.
+- Không biến ý kiến, dự đoán hay quảng cáo trong bài thành sự thật chắc chắn. Nếu bài chỉ nêu dự kiến/tin đồn, hãy giữ đúng sắc thái đó.
 
-CRITICAL LANGUAGE REQUIREMENT:
-All textual values intended for users (`vietnamese_title`, `vietnamese_summary`, `key_takeaways`, `pros`, `cons`, etc.) MUST be written in 100% natural, fluent Vietnamese.
-STRICTLY FORBIDDEN to output Chinese or Japanese characters in any field.
+Tiêu chí và định dạng:
+1. `relevance_score` (số thực 1.0 đến 10.0):
+   - Cao (8.0 - 10.0): tin có tác động thực tế tới lập trình viên: bản phát hành, công cụ, nền tảng, mô hình AI mới, sự cố bảo mật lớn, thay đổi kiến trúc hoặc kỹ thuật có thể áp dụng ngay.
+   - Trung bình (5.0 - 7.9): tin công nghệ chung, đánh giá sản phẩm, xu hướng có liên quan gián tiếp.
+   - Thấp (dưới 5.0): quảng cáo, PR, bài tài trợ, khuyến mãi, tin giải trí/đời sống ít liên quan tới công nghệ hoặc lập trình, bài trùng lặp, nội dung nông.
+2. `is_worth_reading` (boolean): true nếu `relevance_score` >= 7.0.
+3. `vietnamese_title`: bài đã là tiếng Việt, nên GIỮ NGUYÊN tiêu đề gốc. Chỉ bỏ phần thừa (tên báo, ký hiệu rác) nếu có. Không viết lại theo hướng giật gân hay thêm ý mới.
+4. `vietnamese_summary`: 2-4 câu tiếng Việt tự nhiên, nêu đúng điều bài viết nói: chuyện gì xảy ra, ai/cái gì liên quan, ý nghĩa mà bài đã nêu. Không thêm nhận định của riêng bạn.
+5. `key_takeaways`: 0-4 ý chính, mỗi ý phải truy ngược được về một câu trong bài. Bài không có ý thực tế thì để [].
+6. `new_tech_stack`: chỉ liệt kê công nghệ, framework, thư viện, cơ sở dữ liệu hoặc mẫu kiến trúc được NHẮC TÊN trong bài, kèm mô tả ngắn theo đúng bài. Không có thì [].
+7. `tags`: 2-6 thẻ ngắn, chỉ lấy chủ đề thực sự xuất hiện trong bài (ví dụ "AI", "Bảo mật", "PostgreSQL", "Kiến trúc hệ thống", "Mobile").
+8. `target_audience`: nhóm người đọc phù hợp suy ra từ nội dung (ví dụ ["Backend Engineer", "Tech Lead"]). Không rõ thì [].
+9. `architectural_tradeoffs`: CHỈ điền khi bài thực sự bàn về kiến trúc/kỹ thuật và nêu ưu nhược điểm. Chỉ dùng điểm có trong bài (`pros`, `cons`, `when_not_to_use`, `scalability_bottlenecks`); mục nào bài không nói thì []. Bài tin tức, đánh giá sản phẩm hoặc bài không bàn kiến trúc thì đặt `architectural_tradeoffs` là null.
+10. `learning_path`: CHỈ điền khi bài là hướng dẫn/bài học kỹ thuật và có nêu kiến thức nền hay chủ đề nên học tiếp. Ngược lại đặt null.
+11. `cluster_topic_key`: slug kebab-case ngắn (chữ thường, không dấu) mô tả sự kiện/chủ đề cốt lõi để gom nhóm bài cùng chủ đề (ví dụ "openai-gpt-5-ra-mat", "postgresql-17-hieu-nang"). Dùng tên riêng có trong bài.
 
-Return ONLY a valid JSON object matching this schema (do not wrap in markdown or extra commentary):
+YÊU CẦU NGÔN NGỮ:
+Mọi giá trị văn bản dành cho người đọc phải bằng tiếng Việt tự nhiên, trừ tên riêng và thuật ngữ kỹ thuật thường giữ nguyên (API, Kubernetes, PostgreSQL...). Không dùng chữ Hán, chữ Nhật hay ký tự nước ngoài khác.
+
+Chỉ trả về MỘT đối tượng JSON hợp lệ theo schema sau (không bọc markdown, không giải thích thêm):
 {
-  "relevance_score": 8.5,
+  "relevance_score": 7.5,
   "is_worth_reading": true,
-  "target_audience": ["Backend NestJS Engineer", "AI Engineer"],
+  "target_audience": ["..."],
   "vietnamese_title": "...",
   "vietnamese_summary": "...",
   "cluster_topic_key": "slug-kebab-case",
-  "key_takeaways": ["...", "..."],
+  "key_takeaways": ["..."],
   "new_tech_stack": [{"name": "...", "category": "...", "desc": "..."}],
   "tags": ["..."],
-  "architectural_tradeoffs": {
-    "pros": ["..."],
-    "cons": ["..."],
-    "when_not_to_use": ["..."],
-    "scalability_bottlenecks": ["..."]
-  },
-  "learning_path": {
-    "prerequisites": ["..."],
-    "recommended_next_topics": ["..."]
-  }
+  "architectural_tradeoffs": null,
+  "learning_path": null
 }
+(`architectural_tradeoffs` khi được điền có dạng {"pros": [], "cons": [], "when_not_to_use": [], "scalability_bottlenecks": []}; `learning_path` có dạng {"prerequisites": [], "recommended_next_topics": []}.)
 """
 
 
@@ -189,12 +183,12 @@ async def analyze_article_with_9router(
 
     truncated_content = content[:3000] if content else title
     system_prompt = _build_calibrated_system_prompt(few_shot_examples)
-    user_prompt = f"""ARTICLE TITLE: {title}
-SOURCE URL: {url}
-ARTICLE CONTENT:
+    user_prompt = f"""TIÊU ĐỀ BÀI VIẾT: {title}
+URL NGUỒN: {url}
+NỘI DUNG BÀI VIẾT:
 {truncated_content}
 
-Analyze the article according to your system instructions. Output ONLY the required JSON object.
+Phân tích bài viết theo hướng dẫn hệ thống, chỉ dùng thông tin trong bài trên. Chỉ trả về đối tượng JSON yêu cầu.
 """
 
     models_to_try = settings.fallback_models_list
@@ -215,7 +209,7 @@ Analyze the article according to your system instructions. Output ONLY the requi
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                temperature=0.3,
+                temperature=0.1,
             )
             raw_answer = message_text(response)
             data = _clean_json_response(raw_answer)
@@ -245,8 +239,7 @@ async def chat_with_article(
     """Multi-turn technical Q&A with Senior NestJS & AI Architect persona."""
     client = get_ai_client(settings.AI_TIMEOUT_INTERACTIVE)
 
-    system_instruction = f"""You are a Principal Backend Engineer & AI Systems Architect, specialized in NestJS, TypeScript, Microservices, RAG, and AI Engineering.
-You are assisting a software engineer in discussing and deep-diving into the following technical article:
+    system_instruction = f"""You are a senior software engineer and technical editor helping a Vietnamese developer understand the following Vietnamese tech article. You are knowledgeable across backend, frontend, mobile, data, AI and system design; do not assume the reader uses any particular stack unless the article does.
 
 ARTICLE TITLE: {article_title}
 ARTICLE SUMMARY & CONTENT:
@@ -254,10 +247,11 @@ ARTICLE SUMMARY & CONTENT:
 
 Guidelines:
 1. Answer technical questions directly and practically based on the article's core concepts.
-2. When asked about implementation, provide clean, idiomatic NestJS & TypeScript code blueprints (utilizing Dependency Injection, DTOs, Decorators, Prisma, Redis, BullMQ, or Vercel AI SDK where appropriate).
-3. Always explain architectural trade-offs, performance edge cases, and scalability bottlenecks.
-4. Respond in professional, practical, natural Vietnamese. STRICTLY DO NOT use Chinese characters.
-5. At the end of your response, provide 2-3 follow-up exploration questions in the following exact format:
+2. When asked about implementation, give concise, correct code in the language/stack the article or the user mentions (default to TypeScript only if neither does). Say clearly that code is an illustrative example, not taken from the article.
+3. Discuss trade-offs and performance edge cases only when relevant to the question; label them as general engineering judgment ("Ngoài bài viết:") rather than claims from the article.
+4. Only state facts that appear in the article above. If the user asks for something the article does not cover, say clearly "bài viết không đề cập" and then separate any general knowledge you add by prefixing it with "Ngoài bài viết:". Never invent numbers, versions, names or quotes.
+5. Respond in professional, practical, natural Vietnamese. STRICTLY DO NOT use Chinese characters.
+6. At the end of your response, provide 2-3 follow-up exploration questions in the following exact format:
 FOLLOW_UPS:
 - Câu hỏi 1...
 - Câu hỏi 2...
@@ -289,7 +283,7 @@ FOLLOW_UPS:
             response = await client.chat.completions.create(
                 model=model_name,
                 messages=messages,
-                temperature=0.4,
+                temperature=0.2,
             )
             raw_text = message_text(response)
 
@@ -316,7 +310,7 @@ FOLLOW_UPS:
     return {
         "reply": "Hiện tại tất cả cổng AI đều đang bận hoặc quá tải. Vui lòng thử lại sau giây lát.",
         "suggested_followups": [
-            "Làm sao áp dụng bài viết này vào NestJS?",
+            "Làm sao áp dụng nội dung bài viết này vào dự án thực tế?",
             "Những rủi ro về hiệu năng khi áp dụng là gì?",
         ],
     }
@@ -333,40 +327,38 @@ async def generate_weekly_radar_digest(top_articles: list) -> dict:
         )
     articles_context = "\n".join(articles_summary)
 
-    system_prompt = """You are a Chief Technology Officer (CTO) and Chief AI Architect.
-Synthesize the provided technical articles into an executive, strategic "Tech Intelligence & Radar Heatmap" report for Backend NestJS & AI Engineers.
+    system_prompt = """Bạn là biên tập viên công nghệ tổng hợp "Radar Công nghệ" hàng tuần cho lập trình viên Việt Nam, dựa trên các bài tiếng Việt đã được tóm tắt.
 
-CRITICAL LANGUAGE REQUIREMENT:
-All output values must be written in 100% natural, fluent Vietnamese.
-STRICTLY FORBIDDEN to include Chinese or Japanese characters in the output.
+QUY TẮC CHỐNG BỊA:
+- Chỉ rút ra xu hướng từ các bài trong danh sách. Không thêm sự kiện, số liệu, tên sản phẩm hay công ty không có trong dữ liệu, không dùng kiến thức bên ngoài.
+- Chỉ nêu một xu hướng khi có ít nhất 2 bài cùng chủ đề hoặc 1 bài thật sự nổi bật; nói rõ khi bằng chứng mỏng. Không khẳng định xu hướng "toàn ngành" từ vài bài.
+- Nếu dữ liệu không đủ cho một mục, trả về danh sách rỗng [] cho mục đó. Không viết cho đủ số lượng.
+- "status" (Adopt | Trial | Assess | Hold) là đánh giá mức độ sẵn sàng áp dụng; chỉ dùng "Adopt"/"Hold" khi bài nêu rõ cơ sở, mặc định là "Assess".
+- Khuyến nghị phải bám vào nội dung bài, không chung chung.
 
-Return ONLY a valid JSON object matching this schema:
+Mọi giá trị bằng tiếng Việt tự nhiên, không dùng chữ Hán/Nhật. Giữ nguyên tên riêng và thuật ngữ kỹ thuật.
+
+Chỉ trả về MỘT đối tượng JSON hợp lệ theo schema:
 {
   "week_label": "Báo cáo Radar Công nghệ Tuần này",
   "dominant_trends": [
     {
-      "topic": "Tên chủ đề / Công nghệ",
+      "topic": "Tên chủ đề / công nghệ có trong bài",
       "status": "Adopt | Trial | Assess | Hold",
-      "summary": "Tóm tắt ngắn 1-2 câu về đột phá",
-      "relevance": "Ý nghĩa đối với Backend NestJS / Distributed Systems"
+      "summary": "1-2 câu, dựa đúng vào các bài",
+      "relevance": "Ý nghĩa với lập trình viên, dựa trên nội dung bài"
     }
   ],
-  "architectural_shifts": [
-    "Sự dịch chuyển kiến trúc 1...",
-    "Sự dịch chuyển kiến trúc 2..."
-  ],
-  "actionable_recommendations": [
-    "Khuyến nghị hành động thực chiến 1 cho backend team...",
-    "Khuyến nghị hành động thực chiến 2..."
-  ]
+  "architectural_shifts": ["Chỉ khi có bài bàn về thay đổi kiến trúc/kỹ thuật, nếu không để []"],
+  "actionable_recommendations": ["Khuyến nghị bám sát nội dung bài; nếu không đủ cơ sở thì []"]
 }
 """
 
-    user_prompt = f"""Below is the list of top engineering articles from this week:
+    user_prompt = f"""Danh sách các bài nổi bật trong tuần:
 
 {articles_context}
 
-Please generate the weekly tech radar digest JSON following the system instructions.
+Hãy tạo JSON radar tuần theo hướng dẫn hệ thống, chỉ dựa trên các bài trên.
 """
 
     models_to_try = settings.fallback_models_list or [
@@ -384,7 +376,7 @@ Please generate the weekly tech radar digest JSON following the system instructi
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                temperature=0.3,
+                temperature=0.1,
             )
             raw_text = message_text(response)
             data = _clean_json_response(raw_text)
@@ -394,36 +386,43 @@ Please generate the weekly tech radar digest JSON following the system instructi
             ai_circuit_breaker.record_failure(model_name)
             continue
 
+    # No LLM available: group by the most common tags instead of inventing trends
+    tag_groups: dict = {}
+    for a in top_articles[:15]:
+        title = a.get("vietnamese_title") or a.get("title")
+        for tag in (a.get("tags") or [])[:3]:
+            tag_groups.setdefault(tag, []).append(title)
+    ranked = sorted(tag_groups.items(), key=lambda kv: -len(kv[1]))[:5]
     return {
         "week_label": "Báo cáo Radar Công nghệ Tuần này",
         "dominant_trends": [
             {
-                "topic": "Hạ tầng AI & Backend NestJS",
-                "status": "Trial",
-                "summary": "Tổng hợp cập nhật từ các nguồn tin công nghệ (Failover mode).",
-                "relevance": "Theo dõi các nâng cấp về RAG và async worker.",
+                "topic": tag,
+                "status": "Assess",
+                "summary": f"{len(titles)} bài trong tuần, ví dụ: {titles[0]}",
+                "relevance": "Tổng hợp tự động theo thẻ (AI không phản hồi), chưa có phân tích.",
             }
+            for tag, titles in ranked
         ],
-        "architectural_shifts": [
-            "Gia tăng tích hợp Vector Database trực tiếp vào hạ tầng backend hiện có",
-            "Chuyển dịch sang mô hình Microservices phân tán với hàng đợi BullMQ/Kafka",
-        ],
-        "actionable_recommendations": [
-            "Khảo sát và benchmark pgvector trên PostgreSQL nội bộ",
-            "Xây dựng API gateway phân luồng traffic giữa API truyền thống và Agentic LLM flows",
-        ],
+        "architectural_shifts": [],
+        "actionable_recommendations": [],
     }
 
 
-BLUEPRINT_SYSTEM_PROMPT = """You are a Principal Backend Engineer & System Architect specializing in NestJS, TypeScript, Microservices, and scalable software architecture.
-Your task is to analyze the technical article and generate a production-grade, highly actionable NestJS / TypeScript implementation blueprint.
+BLUEPRINT_SYSTEM_PROMPT = """Bạn là kỹ sư phần mềm cấp cao. Hãy đọc bài viết kỹ thuật (tiếng Việt) và đề xuất một bản thiết kế triển khai tham khảo bằng TypeScript/NestJS cho ý tưởng chính của bài.
 
-Return ONLY a valid JSON object matching this exact schema:
+QUY TẮC CHỐNG BỊA:
+- Chỉ triển khai những ý tưởng thực sự có trong bài. Không thêm tính năng, thư viện hay số liệu mà bài không nhắc tới.
+- Mã chỉ là ví dụ minh hoạ, không phải mã gốc của bài. Dùng API có thật và ổn định của NestJS/TypeScript; không bịa tên hàm, package hay tùy chọn cấu hình. Không chắc thì ghi chú "// Cần kiểm tra tài liệu chính thức" thay vì đoán.
+- Nếu bài không phải bài kỹ thuật có thể triển khai (tin tức, đánh giá sản phẩm...), trả về giá trị ngắn, ghi rõ "Bài viết không có nội dung kiến trúc để triển khai" cho các trường, và để "code_snippet" là chuỗi rỗng.
+- Văn bản mô tả bằng tiếng Việt; mã và tên kỹ thuật giữ nguyên tiếng Anh.
+
+Chỉ trả về MỘT đối tượng JSON hợp lệ đúng schema:
 {
-  "architectural_pattern": "Recommended pattern (e.g. Hexagonal Architecture / CQRS / Event-Driven / Modular Service Pattern)",
+  "architectural_pattern": "Mẫu kiến trúc phù hợp với nội dung bài (ví dụ Hexagonal / CQRS / Event-Driven / Modular Service)",
   "suggested_module_structure": "src/modules/...\\n├── controllers/\\n├── services/\\n└── ...",
-  "code_snippet": "// Concrete, production-ready TypeScript/NestJS code snippet implementing key ideas",
-  "database_integration": "Guidance on database, ORM (Prisma/TypeORM), indexing, caching (Redis), or message queue (BullMQ/Kafka)"
+  "code_snippet": "// Đoạn mã TypeScript/NestJS minh hoạ ý chính của bài",
+  "database_integration": "Gợi ý về cơ sở dữ liệu/ORM/cache/hàng đợi, chỉ khi bài có liên quan; nếu không thì ghi rõ không áp dụng"
 }
 """
 
@@ -438,13 +437,12 @@ async def generate_blueprint_on_demand(
 
 
     truncated_content = article_content[:4000] if article_content else article_title
-    user_prompt = f"""ARTICLE TITLE: {article_title}
-SUMMARY: {vietnamese_summary or ''}
-CONTENT:
+    user_prompt = f"""TIÊU ĐỀ: {article_title}
+TÓM TẮT: {vietnamese_summary or ''}
+NỘI DUNG:
 {truncated_content}
 
-Generate a comprehensive NestJS architectural blueprint and implementation code snippet for this topic.
-Output ONLY the JSON object.
+Đề xuất bản thiết kế NestJS tham khảo, chỉ dựa trên nội dung bài trên. Chỉ trả về đối tượng JSON.
 """
 
     models_to_try = settings.fallback_models_list or [
@@ -464,7 +462,7 @@ Output ONLY the JSON object.
                     {"role": "system", "content": BLUEPRINT_SYSTEM_PROMPT},
                     {"role": "user", "content": user_prompt},
                 ],
-                temperature=0.3,
+                temperature=0.1,
             )
             raw_text = message_text(response)
             data = _clean_json_response(raw_text)

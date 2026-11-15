@@ -63,6 +63,11 @@ LIGHT_ARTICLE_OPTIONS = (
     defer(Article.embedding, raiseload=True),
 )
 
+# Articles from deactivated sources stay in the DB but are hidden from every feed
+ACTIVE_SOURCE_ARTICLE = Article.source_id.in_(
+    select(Source.id).where(Source.is_active == True)
+)
+
 # Global crawl state
 crawl_status = {"is_crawling": False, "progress": "", "total_new_articles": 0}
 
@@ -103,7 +108,8 @@ async def run_crawl_all_task():
 
 @router.get("/sources", response_model=List[SourceResponse])
 async def list_sources(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Source).order_by(Source.id))
+    result = await db.execute(select(Source).where(Source.is_active == True).order_by(Source.id)
+    )
     return result.scalars().all()
 
 
@@ -241,6 +247,7 @@ async def list_articles(
         select(Article)
         .options(selectinload(Article.source), *LIGHT_ARTICLE_OPTIONS)
         .join(Source, isouter=True)
+        .where(ACTIVE_SOURCE_ARTICLE)
     )
 
     # Source filter
@@ -1003,6 +1010,7 @@ async def semantic_search_articles(
             .where(
                 Article.embedding.isnot(None),
                 Article.is_hidden == False,
+                ACTIVE_SOURCE_ARTICLE,
             )
         )
         if source_id:
@@ -1034,6 +1042,7 @@ async def semantic_search_articles(
         .options(selectinload(Article.source), *LIGHT_ARTICLE_OPTIONS)
         .where(
             Article.is_hidden == False,
+            ACTIVE_SOURCE_ARTICLE,
             (
                 Article.title.ilike(f"%{query}%")
                 | Article.vietnamese_title.ilike(f"%{query}%")

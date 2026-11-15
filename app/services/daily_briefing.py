@@ -19,7 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
-from app.models.models import Article
+from app.models.models import Article, Source
 from app.services.ai_analyzer import (
     EXTRACTIVE_FALLBACK_MODEL,
     _clean_json_response,
@@ -79,19 +79,27 @@ DAILY = BriefingKind(
     send_when_empty=True,
 )
 
-BRIEFING_PROMPT = """Bạn là biên tập viên công nghệ viết {scope} cho một kỹ sư Backend & AI.
-Dưới đây là các bài đã được chấm điểm (JSON). Hãy:
-1. Chọn tối đa {max_must_read} bài đáng đọc kỹ nhất. Với mỗi bài viết:
-   - "title": tiêu đề tiếng Việt ngắn gọn (dịch nếu tiêu đề gốc là tiếng Anh hoặc ngôn ngữ khác);
-   - "summary": 1-2 câu nói bài viết nói về điều gì, cụ thể và có số liệu/tên riêng nếu có;
-   - "why": 1 câu nêu vì sao kỹ sư Backend & AI nên đọc (tác động thực tế, không chung chung).
+BRIEFING_PROMPT = """Bạn là biên tập viên công nghệ viết {scope} cho lập trình viên Việt Nam.
+Dưới đây là các bài tiếng Việt đã được chấm điểm và tóm tắt (JSON). Chỉ dùng thông tin có trong dữ liệu này.
+
+QUY TẮC CHỐNG BỊA:
+- Không thêm sự kiện, số liệu, tên sản phẩm/công ty/người, phiên bản hay ngày tháng không có trong dữ liệu.
+- Giữ nguyên số liệu và tên riêng như trong dữ liệu; không làm tròn, không suy đoán.
+- Không biến tin đồn, dự kiến hay ý kiến thành sự thật chắc chắn.
+- Không có gì đáng nói thì viết ngắn hơn hoặc bỏ mục đó; không viết cho đủ số lượng.
+- Không dùng kiến thức bên ngoài để giải thích thêm.
+
+Hãy:
+1. Chọn tối đa {max_must_read} bài đáng đọc kỹ nhất. Với mỗi bài:
+   - "title": giữ nguyên tiêu đề trong dữ liệu (chỉ rút gọn nếu quá dài);
+   - "summary": 1-2 câu nói bài viết nói về điều gì, dựa đúng vào "summary"/"takeaways" của bài, có số liệu/tên riêng nếu dữ liệu có;
+   - "why": 1 câu nêu vì sao lập trình viên nên đọc, chỉ dựa trên nội dung bài, không chung chung.
 2. Viết "headline": một câu mở đầu tóm tắt điểm chính của đợt tin này.
 3. Viết "highlights": tối đa {max_highlights} ý tổng hợp nội dung nổi bật của TẤT CẢ các bài trong đợt
    (không chỉ các bài đáng đọc kỹ). Gom các bài cùng chủ đề vào một ý; mỗi ý 1-2 câu, nêu cụ thể
-   sự kiện, con số, tên sản phẩm/công ty; không lặp lại "headline"; ý quan trọng nhất đứng trước.{trend_instruction}
+   sự kiện, con số, tên sản phẩm/công ty có trong dữ liệu; không lặp lại "headline"; ý quan trọng nhất đứng trước.{trend_instruction}
 
-Toàn bộ bằng tiếng Việt tự nhiên, ngắn gọn, không dùng ký tự Trung/Nhật; dữ liệu đầu vào có thể còn
-tiếng Anh, hãy dịch sang tiếng Việt (giữ nguyên tên riêng, tên sản phẩm và thuật ngữ kỹ thuật thông dụng).
+Toàn bộ bằng tiếng Việt tự nhiên, ngắn gọn, không dùng ký tự Trung/Nhật. Giữ nguyên tên riêng, tên sản phẩm và thuật ngữ kỹ thuật thông dụng.
 Chỉ dùng id có trong dữ liệu.
 Chỉ trả về JSON đúng dạng:
 {{"headline": "...", "highlights": ["...", "..."],{trend_field}
@@ -101,8 +109,9 @@ DỮ LIỆU:
 {articles_json}"""
 
 TREND_INSTRUCTION = """
-4. Viết "trend": 2-3 câu về xu hướng lớn nhất xuyên suốt cả ngày,
-   và một gợi ý hành động cụ thể cho kỹ sư Backend."""
+4. Viết "trend": 2-3 câu về xu hướng lớn nhất xuyên suốt cả ngày, chỉ rút ra từ các bài trong dữ liệu
+   (nêu rõ nếu chỉ có một vài bài, không khẳng định xu hướng rộng hơn dữ liệu cho phép),
+   kèm một gợi ý hành động cụ thể nếu dữ liệu đủ cơ sở; nếu không thì bỏ phần gợi ý."""
 
 
 def _article_payload(a: Article) -> Dict[str, Any]:
@@ -164,6 +173,7 @@ async def collect_briefing_articles(db, since: datetime.datetime) -> List[Articl
             Article.is_processed == True,
             Article.is_canonical == True,
             Article.is_hidden == False,
+            Article.source_id.in_(select(Source.id).where(Source.is_active == True)),
             Article.relevance_score >= settings.BRIEFING_MIN_SCORE,
         )
         .order_by(Article.relevance_score.desc(), Article.id.desc())
@@ -270,7 +280,7 @@ async def generate_daily_briefing(
             response = await client.chat.completions.create(
                 model=model_name,
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
+                temperature=0.1,
             )
             data = _clean_json_response(message_text(response))
             briefing = _validate_briefing(data, by_id, kind)

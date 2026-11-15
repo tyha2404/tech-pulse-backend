@@ -64,6 +64,7 @@ async def get_personalized_feed(
         .where(
             Article.is_canonical == True,
             Article.is_hidden == False,
+            Article.source_id.in_(select(Source.id).where(Source.is_active == True)),
         )
         .order_by(desc(Article.id))
         .limit(100)
