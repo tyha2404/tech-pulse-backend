@@ -32,7 +32,8 @@ def test_extractive_heuristic_fallback():
     url = "https://example.com/nestjs-bullmq"
     
     fallback = extractive_heuristic_fallback(title, content, url)
-    assert fallback.relevance_score >= 5.0
+    assert fallback.relevance_score == 0.0
+    assert fallback.is_worth_reading is False
     assert fallback.vietnamese_title == title
     assert len(fallback.tags) > 0
     assert "Nestjs" in fallback.tags or "Backend" in fallback.tags or "Technology" in fallback.tags

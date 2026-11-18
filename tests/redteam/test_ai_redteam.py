@@ -23,7 +23,7 @@ async def test_extractive_heuristic_rejects_empty_or_malformed_inputs():
     res = extractive_heuristic_fallback(malicious_title, malicious_content, "http://bad.org")
     
     assert isinstance(res, AIAnalysisResult)
-    assert res.relevance_score == 5.5
+    assert res.relevance_score == 0.0
     assert res.is_worth_reading is False
     assert not has_hanzi(res.vietnamese_summary)
 

@@ -80,9 +80,9 @@ Tiêu chí và định dạng:
 YÊU CẦU NGÔN NGỮ:
 Mọi giá trị văn bản dành cho người đọc phải bằng tiếng Việt tự nhiên, trừ tên riêng và thuật ngữ kỹ thuật thường giữ nguyên (API, Kubernetes, PostgreSQL...). Không dùng chữ Hán, chữ Nhật hay ký tự nước ngoài khác.
 
-Chỉ trả về MỘT đối tượng JSON hợp lệ theo schema sau (không bọc markdown, không giải thích thêm):
+Chỉ trả về MỘT đối tượng JSON hợp lệ theo schema sau (các giá trị trong <...> chỉ là mô tả, hãy thay bằng giá trị thật) (không bọc markdown, không giải thích thêm):
 {
-  "relevance_score": 7.5,
+  "relevance_score": <số thực 1.0-10.0, tự chấm theo tiêu chí trên>,
   "is_worth_reading": true,
   "target_audience": ["..."],
   "vietnamese_title": "...",
@@ -154,7 +154,7 @@ def extractive_heuristic_fallback(title: str, content: str, url: str) -> AIAnaly
     summary_text = clean_summary if clean_summary else clean_title
 
     return AIAnalysisResult(
-        relevance_score=5.5,
+        relevance_score=0.0,  # chưa được chấm: không giả làm điểm trung bình
         is_worth_reading=False,
         target_audience=["Software Engineer", "Backend Developer"],
         vietnamese_title=clean_title,

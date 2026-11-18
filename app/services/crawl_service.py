@@ -5,6 +5,7 @@ import time
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Any
 import httpx
+from sqlalchemy.orm.attributes import set_committed_value
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.future import select
 from sqlalchemy.orm import load_only
@@ -101,7 +102,7 @@ def _reanalysis_backoff_seconds(failures: int) -> float:
 
 async def reanalyze_fallback_articles(batch_size: int = 40) -> int:
     """Re-runs the LLM on articles saved with the extractive fallback (gateway was down),
-    which otherwise keep the flat 5.5 score and untranslated English text forever.
+    which otherwise keep the placeholder 0.0 score and untranslated English text forever.
     Backs off exponentially while the gateway keeps failing."""
     global _reanalysis_failures, _reanalysis_next_allowed
     if time.time() < _reanalysis_next_allowed:
@@ -230,6 +231,7 @@ async def crawl_single_source(
     # attributes would trigger a lazy load that fails under AsyncSession
     source_id = source.id
     source_name = source.name
+    base_articles_count = source.articles_count or 0
     source.status = "pending"
     await db.commit()
 
@@ -298,9 +300,10 @@ async def crawl_single_source(
             try:
                 async with db.begin_nested():
                     db.add(article)
-                    # Set the relationship (not just source_id) so notifications can
-                    # read article.source without an async lazy load
-                    article.source = source
+                # Mark the relationship as already loaded (no backref event, so
+                # source.articles is never lazy-loaded) so notifications can read
+                # article.source without an async lazy load
+                set_committed_value(article, "source", source)
             except IntegrityError:
                 # Same URL inserted concurrently by another source's crawl
                 logger.info(f"Skipping duplicate article {article.url}")
@@ -336,7 +339,7 @@ async def crawl_single_source(
         source.status = "healthy"
         source.last_crawled_at = datetime.now(timezone.utc)
         source.last_error = None
-        source.articles_count = (source.articles_count or 0) + articles_added
+        source.articles_count = base_articles_count + articles_added
 
         # Record successful CrawlRun
         duration_ms = int((time.time() - start_time) * 1000)
@@ -365,7 +368,8 @@ async def crawl_single_source(
         duration_ms = int((time.time() - start_time) * 1000)
         error_message = str(e)
         logger.error(
-            f"Lỗi khi cào nguồn '{source_name}' (id={source_id}): {error_message}"
+            f"Lỗi khi cào nguồn '{source_name}' (id={source_id}): {error_message}",
+            exc_info=True,
         )
         source.status = "error"
         source.last_error = error_message
