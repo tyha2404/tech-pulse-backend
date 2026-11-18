@@ -39,10 +39,27 @@ logger = logging.getLogger(__name__)
 FPS = 30
 TTS_RATE = "+8%"
 
+# The daily video is built this long after the end-of-day briefing, so the two don't compete for the LLM
+DAILY_VIDEO_DELAY_MINUTES = 10
+
+# A video covers every unused article at or above BRIEFING_MIN_SCORE, newest window first. Fewer than
+# MIN_ARTICLES is too thin to be a video; more than MAX_ARTICLES (~3 min, well under Telegram's 50 MB)
+# keeps the lowest-scored extras unused, so the next video picks them up and nothing is lost.
+MIN_ARTICLES = 3
+MAX_ARTICLES = 20
+SECONDS_PER_ARTICLE = 8
+
+
+def daily_video_schedule() -> Tuple[int, int]:
+    """(hour, minute) of the automatic daily video: shortly after the DAILY briefing."""
+    total = settings.DAILY_BRIEFING_HOUR * 60 + settings.DAILY_BRIEFING_MINUTE + DAILY_VIDEO_DELAY_MINUTES
+    return (total // 60) % 24, total % 60
+
+
 # One video at a time: rendering takes minutes and the TTS endpoint throttles parallel calls
 video_lock = asyncio.Lock()
 
-SCRIPT_PROMPT = """Bạn viết kịch bản video dọc 25-35 giây (TikTok) "Top {count} tin công nghệ hôm nay" cho lập trình viên Việt Nam. Các bài dưới đây xếp theo thứ tự đếm ngược: bài đầu là Top {count}, bài cuối là Top 1 (nổi bật nhất).
+SCRIPT_PROMPT = """Bạn viết kịch bản video dọc khoảng {seconds} giây (TikTok) "Top {count} tin công nghệ hôm nay" cho lập trình viên Việt Nam. Các bài dưới đây xếp theo thứ tự đếm ngược: bài đầu là Top {count}, bài cuối là Top 1 (nổi bật nhất).
 
 NGUYÊN TẮC: chỉ dùng thông tin trong danh sách bài. Không thêm số liệu, tên, ngày tháng không có trong bài. Không bịa, không giật gân sai sự thật, không emoji, không chữ Hán. Văn nói tự nhiên, câu ngắn.
 
@@ -73,8 +90,9 @@ async def used_article_ids(db, days: int = 8) -> set:
     return {int(i) for ids in rows for i in (ids or [])}
 
 
-async def pick_video_articles(db, hours: int, limit: int, reuse: bool = False) -> List[Article]:
-    """Best distinct-story articles of the window that no earlier video used (unless reuse)."""
+async def pick_video_articles(db, hours: int, reuse: bool = False) -> List[Article]:
+    """All distinct-story articles of the window scoring >= BRIEFING_MIN_SCORE that no earlier video
+    used (unless reuse), best first, at most MAX_ARTICLES."""
     since = _local_now() - datetime.timedelta(hours=hours)
     articles = await collect_briefing_articles(db, since)
     used = set() if reuse else await used_article_ids(db)
@@ -87,7 +105,7 @@ async def pick_video_articles(db, hours: int, limit: int, reuse: bool = False) -
             continue
         seen.add(key)
         picked.append(a)
-        if len(picked) >= limit:
+        if len(picked) >= MAX_ARTICLES:
             break
     return picked
 
@@ -161,7 +179,9 @@ async def generate_script(articles: List[Article]) -> Tuple[Dict[str, Any], str]
         for a in articles
     ]
     prompt = SCRIPT_PROMPT.format(
-        count=len(articles), articles_json=json.dumps(payload, ensure_ascii=False)
+        count=len(articles),
+        seconds=6 + SECONDS_PER_ARTICLE * len(articles),
+        articles_json=json.dumps(payload, ensure_ascii=False),
     )
     client = get_ai_client(settings.AI_TIMEOUT_BACKGROUND)
     for model_name in settings.fallback_models_list:
@@ -341,6 +361,27 @@ async def render_video(
     return total
 
 
+def _not_enough_message(found: int) -> str:
+    return f"Chỉ có {found} bài từ {settings.BRIEFING_MIN_SCORE:g} điểm chưa lên video (cần ít nhất {MIN_ARTICLES})."
+
+
+def fit_caption(header: List[str], story_lines: List[str], budget: int = 1000) -> str:
+    """Joins whole lines until the Telegram caption budget (1024 chars, markup included) is used.
+    Cutting the text instead could split an <a> tag and make Telegram reject the video."""
+    out = list(header)
+    used = sum(len(x) + 1 for x in out)
+    shown = 0
+    for line in story_lines:
+        if used + len(line) + 1 > budget - 40:  # keep room for the "and N more" line
+            break
+        out.append(line)
+        used += len(line) + 1
+        shown += 1
+    if shown < len(story_lines):
+        out.append(f"… và {len(story_lines) - shown} bài khác (xem trong giao diện)")
+    return "\n".join(out)
+
+
 async def send_video_to_telegram(
     video: Path, caption: str, countdown: List[Article], duration: float
 ) -> bool:
@@ -348,11 +389,12 @@ async def send_video_to_telegram(
     from app.services.telegram_service import escape_html, send_telegram_video
 
     n = len(countdown)
-    lines = [f"<b>{escape_html(caption)}</b>", ""]
+    header = [f"<b>{escape_html(caption)}</b>", ""]
+    story_lines = []
     for i, a in enumerate(countdown):
         source = f" ({escape_html(a.source.name)})" if getattr(a, "source", None) else ""
-        lines.append(f'Top {n - i}: <a href="{escape_html(a.url)}">{escape_html(a.vietnamese_title or a.title)}</a>{source}')
-    sent = await send_telegram_video(video, "\n".join(lines), duration=duration)
+        story_lines.append(f'Top {n - i}: <a href="{escape_html(a.url)}">{escape_html(a.vietnamese_title or a.title)}</a>{source}')
+    sent = await send_telegram_video(video, fit_caption(header, story_lines), duration=duration)
     if not sent:
         logger.warning(f"Could not send {video.name} to Telegram; the file is still in {video.parent}")
     return sent
@@ -361,24 +403,23 @@ async def send_video_to_telegram(
 async def generate_news_video(
     db,
     hours: int = 24,
-    limit: int = 3,
     send_telegram: bool = True,
     reuse: bool = False,
     on_step: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, Any]:
     """Builds, records and (optionally) sends one video. Articles used by an earlier video are
-    skipped unless reuse=True; with fewer than `limit` fresh articles nothing is made."""
+    skipped unless reuse=True; with fewer than MIN_ARTICLES fresh articles nothing is made."""
     if video_lock.locked():
         return {"success": False, "skipped": "busy", "message": "Đang tạo một video khác, thử lại sau."}
     step = on_step or (lambda _msg: None)
     async with video_lock:
         step("Chọn bài")
-        articles = await pick_video_articles(db, hours, limit, reuse=reuse)
-        if len(articles) < limit:
+        articles = await pick_video_articles(db, hours, reuse=reuse)
+        if len(articles) < MIN_ARTICLES:
             return {
                 "success": False,
                 "skipped": "not_enough_new_articles",
-                "message": f"Chỉ có {len(articles)} bài mới chưa lên video (cần {limit}).",
+                "message": _not_enough_message(len(articles)),
             }
         countdown = list(reversed(articles))  # best story last: Top 3 -> Top 1
         step("Viết kịch bản")
@@ -444,13 +485,13 @@ video_job = VideoJob()
 _background_tasks: set = set()
 
 
-async def _run_job(hours: int, limit: int, send_telegram: bool, reuse: bool) -> None:
+async def _run_job(hours: int, send_telegram: bool, reuse: bool) -> None:
     from app.core import database
 
     try:
         async with database.AsyncSessionLocal() as db:
             result = await generate_news_video(
-                db, hours=hours, limit=limit, send_telegram=send_telegram, reuse=reuse,
+                db, hours=hours, send_telegram=send_telegram, reuse=reuse,
                 on_step=lambda msg: setattr(video_job, "step", msg),
             )
         video_job.result = result
@@ -464,7 +505,7 @@ async def _run_job(hours: int, limit: int, send_telegram: bool, reuse: bool) -> 
 
 
 async def start_video_job(
-    hours: int = 24, limit: int = 3, send_telegram: bool = True, reuse: bool = False
+    hours: int = 24, send_telegram: bool = True, reuse: bool = False
 ) -> Dict[str, Any]:
     """Starts a build in the background. Returns at once: {started: True}, or {started: False, skipped, message}
     when one is already running or there are not enough unused articles."""
@@ -473,14 +514,13 @@ async def start_video_job(
     if video_lock.locked() or video_job.status == "running":
         return {"started": False, "skipped": "busy", "message": "Đang tạo một video khác."}
     async with database.AsyncSessionLocal() as db:
-        fresh = await pick_video_articles(db, hours, limit, reuse=reuse)
-    if len(fresh) < limit:
-        msg = f"Chỉ có {len(fresh)} bài mới chưa lên video (cần {limit})."
-        return {"started": False, "skipped": "not_enough_new_articles", "message": msg}
+        fresh = await pick_video_articles(db, hours, reuse=reuse)
+    if len(fresh) < MIN_ARTICLES:
+        return {"started": False, "skipped": "not_enough_new_articles", "message": _not_enough_message(len(fresh))}
 
     video_job.reset()
     video_job.status, video_job.step, video_job.started_at = "running", "Chọn bài", time.time()
-    task = asyncio.create_task(_run_job(hours, limit, send_telegram, reuse))
+    task = asyncio.create_task(_run_job(hours, send_telegram, reuse))
     _background_tasks.add(task)  # keep a reference so the task isn't garbage-collected mid-run
     task.add_done_callback(_background_tasks.discard)
     return {"started": True}

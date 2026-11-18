@@ -57,29 +57,28 @@ async def _seed(Session, n=4):
         await db.commit()
 
 
-async def test_second_run_skips_articles_already_in_a_video(Session):
+async def test_video_takes_every_unused_article_and_a_second_run_finds_none(Session):
     await _seed(Session, n=4)
     async with Session() as db:
-        first = await vs.generate_news_video(db, limit=3)
-        assert first["success"] and len(first["article_ids"]) == 3
-        # Only 1 unused article is left: not enough for another video
-        second = await vs.generate_news_video(db, limit=3)
+        first = await vs.generate_news_video(db)
+        assert first["success"] and len(first["article_ids"]) == 4  # all of them, not just 3
+        second = await vs.generate_news_video(db)
         assert second["success"] is False and second["skipped"] == "not_enough_new_articles"
-        assert "1 bài mới" in second["message"]
+        assert "0 bài từ" in second["message"] and "cần ít nhất 3" in second["message"]
         assert (await db.execute(vs.select(NewsVideo))).scalars().all().__len__() == 1
 
 
 async def test_new_articles_make_a_new_video_without_repeating_old_ones(Session):
     await _seed(Session, n=3)
     async with Session() as db:
-        first = await vs.generate_news_video(db, limit=3)
+        first = await vs.generate_news_video(db)
         async with Session() as db2:
             src = (await db2.execute(vs.select(Source))).scalars().first()
             for i in range(10, 13):
                 db2.add(Article(title=f"N{i}", url=f"https://e/{i}", source_id=src.id, is_processed=True,
                                 relevance_score=8.5, vietnamese_summary="S", tags=["AI"], cluster_topic_key=f"n{i}"))
             await db2.commit()
-        second = await vs.generate_news_video(db, limit=3)
+        second = await vs.generate_news_video(db)
         assert second["success"]
         assert not set(first["article_ids"]) & set(second["article_ids"])
 
@@ -87,9 +86,9 @@ async def test_new_articles_make_a_new_video_without_repeating_old_ones(Session)
 async def test_force_reuses_used_articles(Session):
     await _seed(Session, n=3)
     async with Session() as db:
-        assert (await vs.generate_news_video(db, limit=3))["success"]
-        assert (await vs.generate_news_video(db, limit=3))["success"] is False
-        assert (await vs.generate_news_video(db, limit=3, reuse=True))["success"] is True
+        assert (await vs.generate_news_video(db))["success"]
+        assert (await vs.generate_news_video(db))["success"] is False
+        assert (await vs.generate_news_video(db, reuse=True))["success"] is True
 
 
 async def test_telegram_failure_still_records_the_video(Session, monkeypatch):
@@ -98,17 +97,17 @@ async def test_telegram_failure_still_records_the_video(Session, monkeypatch):
     monkeypatch.setattr(vs, "send_video_to_telegram", AsyncMock(return_value=False))
     await _seed(Session, n=3)
     async with Session() as db:
-        r = await vs.generate_news_video(db, limit=3)
+        r = await vs.generate_news_video(db)
         assert r["success"] and r["telegram_sent"] is False
         # The failed upload must not cause the same articles to be built again
-        assert (await vs.generate_news_video(db, limit=3))["skipped"] == "not_enough_new_articles"
+        assert (await vs.generate_news_video(db))["skipped"] == "not_enough_new_articles"
 
 
 async def test_busy_lock_blocks_parallel_runs(Session):
     await _seed(Session, n=3)
     async with Session() as db:
         async with vs.video_lock:
-            r = await vs.generate_news_video(db, limit=3)
+            r = await vs.generate_news_video(db)
         assert r["skipped"] == "busy"
 
 
@@ -124,7 +123,7 @@ async def test_job_starts_in_background_and_reports_the_result(Session):
     await _seed(Session, n=3)
     assert vs.video_job.snapshot()["status"] == "idle"
     with patch("app.core.database.AsyncSessionLocal", Session):
-        started = await vs.start_video_job(limit=3)
+        started = await vs.start_video_job()
         assert started == {"started": True}
         assert vs.video_job.snapshot()["status"] == "running"
         await _wait_done()
@@ -136,13 +135,13 @@ async def test_job_starts_in_background_and_reports_the_result(Session):
 async def test_job_refuses_when_not_enough_new_articles_or_already_running(Session):
     await _seed(Session, n=2)
     with patch("app.core.database.AsyncSessionLocal", Session):
-        r = await vs.start_video_job(limit=3)
-        assert r["started"] is False and r["skipped"] == "not_enough_new_articles" and "2 bài mới" in r["message"]
+        r = await vs.start_video_job()
+        assert r["started"] is False and r["skipped"] == "not_enough_new_articles" and "2 bài từ" in r["message"]
         assert vs.video_job.snapshot()["status"] == "idle"  # a refusal leaves no job behind
 
         await _seed_more(Session)
-        assert (await vs.start_video_job(limit=3))["started"] is True
-        assert (await vs.start_video_job(limit=3))["skipped"] == "busy"
+        assert (await vs.start_video_job())["started"] is True
+        assert (await vs.start_video_job())["skipped"] == "busy"
         await _wait_done()
 
 
@@ -161,9 +160,55 @@ async def test_job_failure_is_reported_not_raised(Session, monkeypatch):
     monkeypatch.setattr(vs, "render_video", boom)
     await _seed(Session, n=3)
     with patch("app.core.database.AsyncSessionLocal", Session):
-        assert (await vs.start_video_job(limit=3))["started"] is True
+        assert (await vs.start_video_job())["started"] is True
         await _wait_done()
     snap = vs.video_job.snapshot()
     assert snap["status"] == "failed" and "tts down" in snap["error"]
     async with Session() as db:  # nothing recorded, so the same articles can be retried
         assert (await db.execute(vs.select(NewsVideo))).scalars().all() == []
+
+
+def test_daily_video_runs_ten_minutes_after_the_daily_briefing(monkeypatch):
+    monkeypatch.setattr(settings, "DAILY_BRIEFING_HOUR", 22)
+    monkeypatch.setattr(settings, "DAILY_BRIEFING_MINUTE", 0)
+    assert vs.daily_video_schedule() == (22, 10)
+    monkeypatch.setattr(settings, "DAILY_BRIEFING_MINUTE", 55)
+    assert vs.daily_video_schedule() == (23, 5)  # carries into the next hour
+    monkeypatch.setattr(settings, "DAILY_BRIEFING_HOUR", 23)
+    assert vs.daily_video_schedule() == (0, 5)  # and past midnight
+
+
+async def test_articles_below_the_briefing_score_are_left_out(Session, monkeypatch):
+    monkeypatch.setattr(settings, "BRIEFING_MIN_SCORE", 7.5)
+    await _seed(Session, n=3)
+    async with Session() as db2:
+        src = (await db2.execute(vs.select(Source))).scalars().first()
+        db2.add(Article(title="Low", url="https://e/low", source_id=src.id, is_processed=True, relevance_score=7.4,
+                        vietnamese_summary="S", tags=["AI"], cluster_topic_key="low"))
+        await db2.commit()
+        low_id = (await db2.execute(vs.select(Article.id).where(Article.title == "Low"))).scalar()
+    async with Session() as db:
+        r = await vs.generate_news_video(db)
+    assert r["success"] and low_id not in r["article_ids"] and len(r["article_ids"]) == 3
+
+
+async def test_cap_keeps_the_extra_articles_for_the_next_video(Session, monkeypatch):
+    monkeypatch.setattr(vs, "MAX_ARTICLES", 4)
+    await _seed(Session, n=7)
+    async with Session() as db:
+        first = await vs.generate_news_video(db)
+        assert len(first["article_ids"]) == 4
+        second = await vs.generate_news_video(db)
+        assert second["success"] and len(second["article_ids"]) == 3  # the 3 left over, none repeated
+        assert not set(first["article_ids"]) & set(second["article_ids"])
+
+
+def test_caption_keeps_whole_lines_within_the_telegram_limit():
+    header = ["<b>Top 20 tin công nghệ</b>", ""]
+    stories = [f'Top {i}: <a href="https://example.com/{"x" * 60}">{"Tiêu đề dài " * 6}</a> (HN)' for i in range(20, 0, -1)]
+    cap = vs.fit_caption(header, stories)
+    assert len(cap) <= 1024
+    assert cap.count("<a ") == cap.count("</a>")  # no tag was cut in half
+    assert "bài khác" in cap
+    short = vs.fit_caption(header, stories[:3])
+    assert "bài khác" not in short and short.count("Top ") == 4  # header + 3 stories

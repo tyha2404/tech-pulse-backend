@@ -433,9 +433,35 @@ async def lifespan(app: FastAPI):
         timezone=settings.BRIEFING_TIMEZONE,
         id="daily_briefing",
     )
+    async def daily_video_cron():
+        from app.services.video_service import start_video_job
+
+        try:
+            result = await start_video_job()
+            if result.get("started"):
+                logger.info("🎬 [Scheduler] Daily video started.")
+            else:
+                logger.info(f"🎬 [Scheduler] Daily video skipped: {result.get('message')}")
+        except asyncio.CancelledError:
+            logger.info("⏰ [Scheduler] Daily video cron cancelled safely.")
+        except Exception as e:
+            logger.error(f"⏰ [Scheduler] Daily video error: {e}")
+
+    from app.services.video_service import daily_video_schedule
+
+    video_hour, video_minute = daily_video_schedule()
+    scheduler.add_job(
+        daily_video_cron,
+        "cron",
+        hour=video_hour,
+        minute=video_minute,
+        timezone=settings.BRIEFING_TIMEZONE,
+        id="daily_video",
+    )
     schedule_note = (
         f"briefing updates at {', '.join(f'{h:02d}:00' for h in update_hours) or 'none'}, "
-        f"super summary at {settings.DAILY_BRIEFING_HOUR:02d}:{settings.DAILY_BRIEFING_MINUTE:02d}"
+        f"super summary at {settings.DAILY_BRIEFING_HOUR:02d}:{settings.DAILY_BRIEFING_MINUTE:02d}, "
+        f"daily video at {video_hour:02d}:{video_minute:02d}"
     )
 
     if settings.MORNING_ESPRESSO_ENABLED:

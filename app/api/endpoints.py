@@ -949,21 +949,28 @@ async def dispatch_digest_to_webhook(
 @router.post("/video/generate")
 async def generate_video(
     hours: int = Query(24, ge=1, le=168),
-    limit: int = Query(3, ge=2, le=5),
     send_telegram: bool = Query(True, description="Gửi video tới Telegram sau khi tạo xong"),
     force: bool = Query(False, description="Dùng lại cả các bài đã có trong video trước"),
 ):
     """Starts building a news video in the background (takes minutes). Poll GET /video/status."""
     from app.services.video_service import start_video_job
 
-    return await start_video_job(hours=hours, limit=limit, send_telegram=send_telegram, reuse=force)
+    return await start_video_job(hours=hours, send_telegram=send_telegram, reuse=force)
 
 
 @router.get("/video/status")
 async def video_status():
     from app.services.video_service import video_job
 
-    return video_job.snapshot()
+    from app.services.video_service import MAX_ARTICLES, MIN_ARTICLES
+
+    # Static limits ride along so the UI can state the rule without hard-coding it
+    return {
+        **video_job.snapshot(),
+        "min_score": settings.BRIEFING_MIN_SCORE,
+        "min_articles": MIN_ARTICLES,
+        "max_articles": MAX_ARTICLES,
+    }
 
 
 @router.get("/videos")
