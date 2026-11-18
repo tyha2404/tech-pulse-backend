@@ -28,6 +28,8 @@ class CircuitBreaker:
         self._failure_counts: Dict[str, int] = {}
         self._success_counts: Dict[str, int] = {}
         self._last_state_change: Dict[str, float] = {}
+        # Per-key cooldown overriding recovery_timeout_sec (set by trip())
+        self._cooldowns: Dict[str, float] = {}
 
     def _get_state(self, service_key: str) -> CircuitState:
         if service_key not in self._states:
@@ -41,7 +43,8 @@ class CircuitBreaker:
 
         # If OPEN and cooldown period expired -> transition to HALF_OPEN
         if current_state == CircuitState.OPEN:
-            if now - self._last_state_change[service_key] >= self.recovery_timeout_sec:
+            cooldown = self._cooldowns.get(service_key, self.recovery_timeout_sec)
+            if now - self._last_state_change[service_key] >= cooldown:
                 self._states[service_key] = CircuitState.HALF_OPEN
                 self._success_counts[service_key] = 0
                 self._last_state_change[service_key] = now
@@ -73,13 +76,24 @@ class CircuitBreaker:
             self._states[service_key] = CircuitState.OPEN
             self._last_state_change[service_key] = now
 
+    def trip(self, service_key: str, cooldown_sec: float) -> None:
+        """Open the circuit right away for cooldown_sec (errors that retrying won't fix:
+        missing credentials, unknown model, exhausted quota)."""
+        self._get_state(service_key)
+        self._states[service_key] = CircuitState.OPEN
+        self._failure_counts[service_key] = self.failure_threshold
+        self._cooldowns[service_key] = cooldown_sec
+        self._last_state_change[service_key] = time.time()
+
     def reset(self, service_key: str = None):
         if service_key:
             self._states[service_key] = CircuitState.CLOSED
             self._failure_counts[service_key] = 0
             self._success_counts[service_key] = 0
             self._last_state_change[service_key] = time.time()
+            self._cooldowns.pop(service_key, None)
         else:
+            self._cooldowns.clear()
             self._states.clear()
             self._failure_counts.clear()
             self._success_counts.clear()

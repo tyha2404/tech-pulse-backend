@@ -5,6 +5,7 @@ from typing import Tuple, List, Optional
 from openai import AsyncOpenAI
 from app.core.config import settings
 from app.schemas.schemas import AIAnalysisResult
+from app.services.agy_client import RoutedClient
 from app.services.circuit_breaker import ai_circuit_breaker
 
 logger = logging.getLogger(__name__)
@@ -13,19 +14,45 @@ logger = logging.getLogger(__name__)
 _ai_clients: dict = {}
 
 
-def get_ai_client(timeout: float) -> AsyncOpenAI:
+def get_ai_client(timeout: float) -> RoutedClient:
     client = _ai_clients.get(timeout)
     if client is None:
-        client = AsyncOpenAI(
+        client = RoutedClient(AsyncOpenAI(
             base_url=settings.NINEROUTERS_BASE_URL,
             api_key=settings.NINEROUTERS_API_KEY,
             timeout=timeout,
             # Failover and the circuit breaker handle errors; SDK retries honour the
-            # gateway's long retry-after (60s+) and stall the crawl's AI slots.
-            max_retries=1,
-        )
+            # gateway's long retry-after (60s+) and stall the crawl's AI slots
+            # (a Cloudflare 502 made every article wait ~100s before falling back).
+            max_retries=0,
+        ), timeout)
         _ai_clients[timeout] = client
     return client
+
+
+_RETRY_IN = re.compile(r"try again in\s*(?:(\d+)h)?\s*(?:(\d+)m)?\s*(?:([\d.]+)s)?", re.I)
+
+
+def _retry_after_seconds(text: str, default: float = 300.0) -> float:
+    m = _RETRY_IN.search(text)
+    if not m or not any(m.groups()):
+        return default
+    h, mi, sec = m.groups()
+    total = int(h or 0) * 3600 + int(mi or 0) * 60 + float(sec or 0)
+    return min(max(total + 5, 60.0), 3600.0)
+
+
+def record_ai_failure(model_name: str, err: Exception) -> None:
+    """Counts a failed model call. Errors that retrying can't fix open the circuit at once, so
+    a model with no credentials or an exhausted quota isn't re-tried on every article."""
+    text = str(err)
+    status = getattr(err, "status_code", None)
+    if status in (401, 403, 404):
+        ai_circuit_breaker.trip(model_name, 1800.0)
+    elif status == 429 or any(w in text.lower() for w in ("rate limit", "rate_limit", "quota", "resource_exhausted", "resource exhausted")):
+        ai_circuit_breaker.trip(model_name, _retry_after_seconds(text))
+    else:
+        ai_circuit_breaker.record_failure(model_name)
 
 
 def message_text(response) -> str:
@@ -219,7 +246,7 @@ Phân tích bài viết theo hướng dẫn hệ thống, chỉ dùng thông tin
             return analysis, model_name
 
         except Exception as err:
-            ai_circuit_breaker.record_failure(model_name)
+            record_ai_failure(model_name, err)
             last_exception = err
             logger.warning(f"⚠️ Model {model_name} failed ({err}). Triggering failover...")
             continue
@@ -304,7 +331,7 @@ FOLLOW_UPS:
                 "suggested_followups": suggested_followups[:3],
             }
         except Exception as err:
-            ai_circuit_breaker.record_failure(model_name)
+            record_ai_failure(model_name, err)
             continue
 
     return {
@@ -383,7 +410,7 @@ Hãy tạo JSON radar tuần theo hướng dẫn hệ thống, chỉ dựa trên
             ai_circuit_breaker.record_success(model_name)
             return data
         except Exception as err:
-            ai_circuit_breaker.record_failure(model_name)
+            record_ai_failure(model_name, err)
             continue
 
     # No LLM available: group by the most common tags instead of inventing trends
@@ -483,7 +510,7 @@ NỘI DUNG:
                 ),
             }
         except Exception as err:
-            ai_circuit_breaker.record_failure(model_name)
+            record_ai_failure(model_name, err)
             continue
 
     # Fallback if AI providers unavailable

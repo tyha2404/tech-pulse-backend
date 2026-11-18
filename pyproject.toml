@@ -19,6 +19,9 @@ dependencies = [
     "apscheduler>=3.10.4",
     "openai>=1.50.0",
     "python-dotenv>=1.0.1",
+    "pillow>=10.0.0",
+    "edge-tts>=6.1.0",
+    "imageio-ffmpeg>=0.5.0",
     "pytest>=8.3.0",
     "pytest-asyncio>=0.24.0"
 ]

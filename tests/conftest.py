@@ -30,3 +30,12 @@ def reset_urgent_alert_rate_limit():
     _urgent_alert_timestamps.clear()
     yield
     _urgent_alert_timestamps.clear()
+
+
+@pytest.fixture(autouse=True)
+def use_9router_model_names_in_tests(monkeypatch):
+    """Production defaults to agy/... models; tests mock AsyncOpenAI and must never spawn the real CLI."""
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "AI_MODEL", "test-model")
+    monkeypatch.setattr(settings, "AI_FALLBACK_MODELS", "test-fallback-1,test-fallback-2")

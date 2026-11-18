@@ -36,10 +36,13 @@ class Settings(BaseSettings):
         "NINEROUTERS_BASE_URL", "http://127.0.0.1:20128/v1"
     )
     NINEROUTERS_API_KEY: str = os.getenv("NINEROUTERS_API_KEY", "9router-local")
-    AI_MODEL: str = os.getenv("AI_MODEL", "nexo-chat")
+    # Primary: the agy CLI (model names prefixed "agy/"). 9router models are the backup chain.
+    AI_MODEL: str = os.getenv("AI_MODEL", "agy/gemini-4-hydrogen-medium")
     AI_FALLBACK_MODELS: str = os.getenv(
-        "AI_FALLBACK_MODELS", "gemini/gemini-3.8-flash,groq/openai/gpt-oss-120b"
+        "AI_FALLBACK_MODELS", "nexo-chat,groq/openai/gpt-oss-120b"
     )
+    AGY_BIN: str = os.getenv("AGY_BIN", "agy")  # absolute path if the service's PATH lacks ~/.local/bin
+    AGY_MAX_CONCURRENCY: int = int(os.getenv("AGY_MAX_CONCURRENCY", "3"))
     EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
 
     # AI Request Timeouts (Interactive/Chat vs Background/Crawl/Blueprint)
@@ -72,6 +75,16 @@ class Settings(BaseSettings):
     # End-of-day AI briefing (one Telegram message summarizing the last 24h)
     # Only articles scoring at least this go into the scheduled briefings
     BRIEFING_MIN_SCORE: float = float(os.getenv("BRIEFING_MIN_SCORE", "7.5"))
+    # Short vertical news video (TikTok)
+    VIDEO_OUTPUT_DIR: str = os.getenv("VIDEO_OUTPUT_DIR", "output/videos")
+    VIDEO_TTS_VOICE: str = os.getenv("VIDEO_TTS_VOICE", "vi-VN-HoaiMyNeural")
+    VIDEO_TTS_RATE: str = os.getenv("VIDEO_TTS_RATE", "+8%")
+    VIDEO_FPS: int = int(os.getenv("VIDEO_FPS", "30"))
+    # Fetch each article's og:image for the video. Images belong to the publishers: credit is
+    # shown on screen, but set false to avoid any copyright claims.
+    VIDEO_USE_ARTICLE_IMAGES: bool = os.getenv("VIDEO_USE_ARTICLE_IMAGES", "true").lower() in ("true", "1", "yes")
+    VIDEO_FONT_PATH: str = os.getenv("VIDEO_FONT_PATH", "")
+    VIDEO_FONT_BOLD_PATH: str = os.getenv("VIDEO_FONT_BOLD_PATH", "")
     BRIEFING_TIMEZONE: str = os.getenv("BRIEFING_TIMEZONE", "Asia/Ho_Chi_Minh")
     DAILY_BRIEFING_HOUR: int = int(os.getenv("DAILY_BRIEFING_HOUR", "22"))
     DAILY_BRIEFING_MINUTE: int = int(os.getenv("DAILY_BRIEFING_MINUTE", "0"))

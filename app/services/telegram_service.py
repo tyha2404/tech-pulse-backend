@@ -290,6 +290,61 @@ async def send_telegram_message(
     return False
 
 
+# Telegram's Bot API accepts uploads up to 50 MB
+TELEGRAM_MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+TELEGRAM_CAPTION_LIMIT = 1024
+
+
+async def send_telegram_video(
+    video_path: Any,
+    caption_html: str = "",
+    duration: Optional[float] = None,
+    width: int = 1080,
+    height: int = 1920,
+    timeout: float = 180.0,
+) -> bool:
+    """Uploads an mp4 to the configured chat (streamable, with the vertical size so it isn't letterboxed)."""
+    from pathlib import Path
+
+    bot_token = settings.TELEGRAM_BOT_TOKEN
+    chat_id = settings.TELEGRAM_CHAT_ID
+    if not bot_token or not chat_id:
+        return False
+    path = Path(video_path)
+    if not path.is_file():
+        logger.warning(f"Telegram video not found: {path.name}")
+        return False
+    if path.stat().st_size > TELEGRAM_MAX_UPLOAD_BYTES:
+        logger.warning(f"Telegram video {path.name} is over the 50 MB bot upload limit")
+        return False
+
+    data = {
+        "chat_id": chat_id,
+        "caption": caption_html[:TELEGRAM_CAPTION_LIMIT],
+        "parse_mode": "HTML",
+        "supports_streaming": "true",
+        "width": str(width),
+        "height": str(height),
+    }
+    if duration:
+        data["duration"] = str(int(round(duration)))
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            with open(path, "rb") as fh:
+                resp = await client.post(
+                    f"https://api.telegram.org/bot{bot_token}/sendVideo",
+                    data=data,
+                    files={"video": (path.name, fh, "video/mp4")},
+                )
+        if resp.status_code == 200:
+            return True
+        logger.warning(f"Telegram sendVideo failed ({resp.status_code}): {resp.text[:300]}")
+    except Exception as e:
+        # Not f"{e}": httpx errors can embed the request URL, which contains the bot token
+        logger.error(f"Telegram sendVideo error: {type(e).__name__}")
+    return False
+
+
 async def send_urgent_alert(article: Any) -> bool:
     """Send immediate alert for score >= TELEGRAM_ALERT_THRESHOLD with rate limit protection"""
     if not _check_urgent_rate_limit():

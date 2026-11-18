@@ -21,6 +21,7 @@ from sqlalchemy.orm import selectinload
 from app.core.config import settings
 from app.models.models import Article, Source
 from app.services.ai_analyzer import (
+    record_ai_failure,
     EXTRACTIVE_FALLBACK_MODEL,
     _clean_json_response,
     get_ai_client,
@@ -289,7 +290,7 @@ async def generate_daily_briefing(
             ai_circuit_breaker.record_success(model_name)
             return briefing, model_name
         except Exception as err:
-            ai_circuit_breaker.record_failure(model_name)
+            record_ai_failure(model_name, err)
             logger.warning(f"{kind.title}: model {model_name} failed ({err})")
 
     return fallback_briefing(articles, kind), "fallback"

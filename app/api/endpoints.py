@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import re
+from fastapi.responses import FileResponse
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks, Body, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -941,6 +942,38 @@ async def dispatch_digest_to_webhook(
         if sent
         else "Telegram từ chối tin nhắn. Xem log backend để biết lý do.",
     }
+
+
+@router.post("/video/generate")
+async def generate_video(
+    hours: int = Query(24, ge=1, le=168),
+    limit: int = Query(3, ge=2, le=5),
+    send_telegram: bool = Query(True, description="Gửi video tới Telegram sau khi tạo xong"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Build a short vertical news video (mp4) from the best recent articles."""
+    from app.services.video_service import generate_news_video
+
+    try:
+        result = await generate_news_video(db, hours=hours, limit=limit, send_telegram=send_telegram)
+    except Exception as err:
+        logger.exception("Video generation failed")
+        raise HTTPException(status_code=500, detail=f"Không tạo được video: {err}")
+    if result.get("success"):
+        result["url"] = f"/video/files/{result['file']}"
+    return result
+
+
+@router.get("/video/files/{name}")
+async def download_video(name: str):
+    from pathlib import Path
+
+    if not re.fullmatch(r"techpulse-\d{8}-\d{6}\.mp4", name):
+        raise HTTPException(status_code=404, detail="Không tìm thấy video")
+    path = Path(settings.VIDEO_OUTPUT_DIR) / name
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Không tìm thấy video")
+    return FileResponse(path, media_type="video/mp4", filename=name)
 
 
 @router.post("/crawl-all")

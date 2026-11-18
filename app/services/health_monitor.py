@@ -15,6 +15,7 @@ from sqlalchemy import func, select
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
 from app.models.models import Article, CrawlRun
+from app.services.agy_client import AGY_PREFIX, agy_healthy
 from app.services.ai_analyzer import EXTRACTIVE_FALLBACK_MODEL, get_ai_client, message_text
 from app.services.telegram_service import escape_html, send_telegram_message
 
@@ -40,6 +41,12 @@ async def check_ai_gateway() -> Optional[str]:
     client = get_ai_client(settings.AI_TIMEOUT_BACKGROUND)
     errors = []
     for model_name in settings.fallback_models_list:
+        if model_name.startswith(AGY_PREFIX):
+            problem = await agy_healthy(model_name[len(AGY_PREFIX):])
+            if problem is None:
+                return None
+            errors.append(f"{model_name}: {problem}")
+            continue
         try:
             response = await client.chat.completions.create(
                 model=model_name,
