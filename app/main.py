@@ -9,7 +9,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from app.core.config import settings
 from app.core.database import engine, Base, AsyncSessionLocal
 from app.models.models import Source
-from app.api.endpoints import router as api_router
+from app.api.endpoints import media_router, router as api_router
 from app.services.crawl_service import crawl_single_source, crawl_all_active_sources
 from sqlalchemy import text
 from sqlalchemy.future import select
@@ -506,6 +506,7 @@ app.add_middleware(
 )
 
 app.include_router(api_router, prefix="/api")
+app.include_router(media_router, prefix="/api")
 
 
 @app.get("/")

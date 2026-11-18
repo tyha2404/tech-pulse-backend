@@ -124,6 +124,20 @@ class Article(Base):
     )
 
 
+class NewsVideo(Base):
+    """A generated news video. The article ids it used are never put in another video."""
+
+    __tablename__ = "news_videos"
+
+    id = Column(Integer, primary_key=True, index=True)
+    file = Column(String(255), nullable=False)
+    article_ids = Column(JSON, default=list)  # [12, 15, 19]
+    caption = Column(Text, nullable=True)
+    duration_sec = Column(Float, nullable=True)
+    telegram_sent = Column(Boolean, nullable=True)  # None = Telegram not configured
+    created_at = Column(DateTime(timezone=True), default=utc_now, index=True)
+
+
 class ArticleFeedback(Base):
     __tablename__ = "article_feedbacks"
 

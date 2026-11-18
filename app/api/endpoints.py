@@ -51,11 +51,13 @@ from app.services.ai_analyzer import (
 )
 from app.services.circuit_breaker import ai_circuit_breaker
 from app.core.config import settings
-from app.core.security import require_api_access
+from app.core.security import require_api_access, require_media_access
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(dependencies=[Depends(require_api_access)])
+# Read-only media fetched by <video>/<a download>, which send no Origin (see require_media_access)
+media_router = APIRouter(dependencies=[Depends(require_media_access)])
 
 # Heavy columns that list/ranking endpoints never return; raiseload makes any
 # accidental access fail loudly instead of silently re-fetching per row
@@ -949,22 +951,75 @@ async def generate_video(
     hours: int = Query(24, ge=1, le=168),
     limit: int = Query(3, ge=2, le=5),
     send_telegram: bool = Query(True, description="Gửi video tới Telegram sau khi tạo xong"),
-    db: AsyncSession = Depends(get_db),
+    force: bool = Query(False, description="Dùng lại cả các bài đã có trong video trước"),
 ):
-    """Build a short vertical news video (mp4) from the best recent articles."""
-    from app.services.video_service import generate_news_video
+    """Starts building a news video in the background (takes minutes). Poll GET /video/status."""
+    from app.services.video_service import start_video_job
 
-    try:
-        result = await generate_news_video(db, hours=hours, limit=limit, send_telegram=send_telegram)
-    except Exception as err:
-        logger.exception("Video generation failed")
-        raise HTTPException(status_code=500, detail=f"Không tạo được video: {err}")
-    if result.get("success"):
-        result["url"] = f"/video/files/{result['file']}"
-    return result
+    return await start_video_job(hours=hours, limit=limit, send_telegram=send_telegram, reuse=force)
 
 
-@router.get("/video/files/{name}")
+@router.get("/video/status")
+async def video_status():
+    from app.services.video_service import video_job
+
+    return video_job.snapshot()
+
+
+@router.get("/videos")
+async def list_videos(limit: int = Query(20, ge=1, le=100), db: AsyncSession = Depends(get_db)):
+    """Videos already built, newest first, with the articles each one used."""
+    from app.models.models import NewsVideo
+
+    videos = (
+        await db.execute(select(NewsVideo).order_by(NewsVideo.created_at.desc(), NewsVideo.id.desc()).limit(limit))
+    ).scalars().all()
+    ids = {int(i) for v in videos for i in (v.article_ids or [])}
+    titles = {}
+    if ids:
+        rows = (await db.execute(select(Article.id, Article.title, Article.vietnamese_title, Article.url).where(Article.id.in_(ids)))).all()
+        titles = {r.id: {"id": r.id, "title": r.vietnamese_title or r.title, "url": r.url} for r in rows}
+    return [
+        {
+            "id": v.id,
+            "file": v.file,
+            "url": f"/video/files/{v.file}",
+            "caption": v.caption,
+            "duration_sec": v.duration_sec,
+            "telegram_sent": v.telegram_sent,
+            "created_at": v.created_at,
+            "articles": [titles[i] for i in (v.article_ids or []) if i in titles],
+        }
+        for v in videos
+    ]
+
+
+@router.post("/videos/{video_id}/telegram")
+async def resend_video_to_telegram(video_id: int, db: AsyncSession = Depends(get_db)):
+    """Sends an already built video to Telegram again (e.g. after a failed upload)."""
+    from pathlib import Path
+
+    from app.models.models import NewsVideo
+    from app.services.video_service import send_video_to_telegram
+
+    if not (settings.TELEGRAM_BOT_TOKEN and settings.TELEGRAM_CHAT_ID):
+        raise HTTPException(status_code=400, detail="Chưa cấu hình TELEGRAM_BOT_TOKEN và TELEGRAM_CHAT_ID trong backend/.env.")
+    video = await db.get(NewsVideo, video_id)
+    path = Path(settings.VIDEO_OUTPUT_DIR) / video.file if video else None
+    if video is None or not path.is_file():
+        raise HTTPException(status_code=404, detail="Không tìm thấy video")
+    rows = (
+        await db.execute(select(Article).options(selectinload(Article.source)).where(Article.id.in_(video.article_ids or [])))
+    ).scalars().all()
+    by_id = {a.id: a for a in rows}
+    countdown = [by_id[i] for i in (video.article_ids or []) if i in by_id]
+    sent = await send_video_to_telegram(path, video.caption or "", countdown, video.duration_sec or 0)
+    video.telegram_sent = sent
+    await db.commit()
+    return {"success": sent, "message": "Đã gửi video tới Telegram." if sent else "Telegram từ chối video. Xem log backend để biết lý do."}
+
+
+@media_router.get("/video/files/{name}")
 async def download_video(name: str):
     from pathlib import Path
 

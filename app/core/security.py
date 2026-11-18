@@ -24,3 +24,18 @@ def is_cross_site_request(request: Request) -> bool:
 async def require_api_access(request: Request) -> None:
     if is_cross_site_request(request):
         raise HTTPException(status_code=403, detail="Yêu cầu từ trang web khác bị chặn")
+
+
+async def require_media_access(request: Request) -> None:
+    """Guard for read-only media (generated videos) that <video src> and <a download> fetch.
+
+    Those subresource requests carry no Origin, and the dev frontend (:5174) loads them from the API
+    (:8000), which is "same-site" and would fail require_api_access. A page on another site still
+    can't embed or fetch them; a request with an Origin gets the full cross-site check.
+    """
+    if request.headers.get("origin"):
+        blocked = is_cross_site_request(request)
+    else:
+        blocked = request.headers.get("sec-fetch-site") == "cross-site"
+    if blocked:
+        raise HTTPException(status_code=403, detail="Yêu cầu từ trang web khác bị chặn")

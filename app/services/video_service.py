@@ -10,14 +10,16 @@ import logging
 import re
 import subprocess
 import tempfile
+import time
+from sqlalchemy import select
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import edge_tts
 import imageio_ffmpeg
 
 from app.core.config import settings
-from app.models.models import Article
+from app.models.models import Article, NewsVideo
 from app.services.ai_analyzer import (
     record_ai_failure,
     _clean_json_response,
@@ -36,6 +38,9 @@ logger = logging.getLogger(__name__)
 
 FPS = 30
 TTS_RATE = "+8%"
+
+# One video at a time: rendering takes minutes and the TTS endpoint throttles parallel calls
+video_lock = asyncio.Lock()
 
 SCRIPT_PROMPT = """Bạn viết kịch bản video dọc 25-35 giây (TikTok) "Top {count} tin công nghệ hôm nay" cho lập trình viên Việt Nam. Các bài dưới đây xếp theo thứ tự đếm ngược: bài đầu là Top {count}, bài cuối là Top 1 (nổi bật nhất).
 
@@ -57,11 +62,26 @@ DANH SÁCH BÀI:
 
 # ---------- article selection ----------
 
-async def pick_video_articles(db, hours: int, limit: int) -> List[Article]:
+def _as_utc(dt: datetime.datetime) -> datetime.datetime:
+    return dt if dt.tzinfo else dt.replace(tzinfo=datetime.timezone.utc)
+
+
+async def used_article_ids(db, days: int = 8) -> set:
+    """Ids of articles already in a video. Only recent videos matter: a video window is <= 7 days."""
+    since = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)
+    rows = (await db.execute(select(NewsVideo.article_ids).where(NewsVideo.created_at >= since))).scalars().all()
+    return {int(i) for ids in rows for i in (ids or [])}
+
+
+async def pick_video_articles(db, hours: int, limit: int, reuse: bool = False) -> List[Article]:
+    """Best distinct-story articles of the window that no earlier video used (unless reuse)."""
     since = _local_now() - datetime.timedelta(hours=hours)
     articles = await collect_briefing_articles(db, since)
+    used = set() if reuse else await used_article_ids(db)
     picked, seen = [], set()
     for a in articles:
+        if a.id in used:
+            continue
         key = a.cluster_topic_key or f"id-{a.id}"
         if key in seen:
             continue
@@ -275,12 +295,16 @@ def concat_clips(clips: List[Path], out: Path) -> None:
         listing.unlink(missing_ok=True)
 
 
-async def render_video(segments: List[Dict[str, Any]], out_path: Path) -> float:
+async def render_video(
+    segments: List[Dict[str, Any]], out_path: Path, on_step: Optional[Callable[[str], None]] = None
+) -> float:
     """Renders segments to an mp4; returns total duration in seconds."""
     out_path.parent.mkdir(parents=True, exist_ok=True)
     tail = 0.5  # breathing room after each voice line
 
+    step = on_step or (lambda _msg: None)
     if settings.VIDEO_USE_ARTICLE_IMAGES:
+        step("Tải ảnh bài viết")
         items = [s for s in segments if s["kind"] == "item"]
         images = await asyncio.gather(*[fetch_article_image(s.get("url", "")) for s in items])
         for seg, img in zip(items, images):
@@ -294,6 +318,7 @@ async def render_video(segments: List[Dict[str, Any]], out_path: Path) -> float:
         tmp_dir = Path(tmp)
         speech: List[float] = []
         for i, seg in enumerate(segments):  # sequential: edge-tts throttles parallel calls
+            step(f"Đọc giọng ({i + 1}/{len(segments)})")
             seg["text"] = spoken_text(seg["text"])
             speech.append(await synthesize(seg["text"], tmp_dir / f"a{i}.mp3"))
         durations = [d + tail for d in speech]
@@ -308,6 +333,7 @@ async def render_video(segments: List[Dict[str, Any]], out_path: Path) -> float:
 
         clips = []
         for i, sc in enumerate(scenes):
+            step(f"Dựng video ({i + 1}/{len(scenes)})")
             clip = tmp_dir / f"s{i}.mp4"
             await asyncio.to_thread(_encode_scene, sc, tmp_dir / f"a{i}.mp3", durations[i], clip)
             clips.append(clip)
@@ -333,30 +359,128 @@ async def send_video_to_telegram(
 
 
 async def generate_news_video(
-    db, hours: int = 24, limit: int = 3, send_telegram: bool = True
+    db,
+    hours: int = 24,
+    limit: int = 3,
+    send_telegram: bool = True,
+    reuse: bool = False,
+    on_step: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, Any]:
-    articles = await pick_video_articles(db, hours, limit)
-    if not articles:
-        return {"success": False, "message": "Không có bài đủ điểm trong khung giờ này."}
-    countdown = list(reversed(articles))  # best story last: Top 3 -> Top 1
-    script, model = await generate_script(countdown)
-    segments = build_segments(script, countdown)
-    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    out = Path(settings.VIDEO_OUTPUT_DIR) / f"techpulse-{stamp}.mp4"
-    duration = await render_video(segments, out)
-    caption = f"{script['caption']} {' '.join(script['hashtags'])}".strip()
-    out.with_suffix(".txt").write_text(caption + "\n", encoding="utf-8")
+    """Builds, records and (optionally) sends one video. Articles used by an earlier video are
+    skipped unless reuse=True; with fewer than `limit` fresh articles nothing is made."""
+    if video_lock.locked():
+        return {"success": False, "skipped": "busy", "message": "Đang tạo một video khác, thử lại sau."}
+    step = on_step or (lambda _msg: None)
+    async with video_lock:
+        step("Chọn bài")
+        articles = await pick_video_articles(db, hours, limit, reuse=reuse)
+        if len(articles) < limit:
+            return {
+                "success": False,
+                "skipped": "not_enough_new_articles",
+                "message": f"Chỉ có {len(articles)} bài mới chưa lên video (cần {limit}).",
+            }
+        countdown = list(reversed(articles))  # best story last: Top 3 -> Top 1
+        step("Viết kịch bản")
+        script, model = await generate_script(countdown)
+        segments = build_segments(script, countdown)
+        stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        out = Path(settings.VIDEO_OUTPUT_DIR) / f"techpulse-{stamp}.mp4"
+        duration = await render_video(segments, out, on_step=on_step)
+        caption = f"{script['caption']} {' '.join(script['hashtags'])}".strip()
+        out.with_suffix(".txt").write_text(caption + "\n", encoding="utf-8")
 
-    telegram_sent: Optional[bool] = None
-    if send_telegram and settings.TELEGRAM_BOT_TOKEN and settings.TELEGRAM_CHAT_ID:
-        telegram_sent = await send_video_to_telegram(out, caption, countdown, duration)
-    return {
-        "success": True,
-        "file": out.name,
-        "duration_sec": round(duration, 1),
-        "script_model": model,
-        "article_ids": [a.id for a in countdown],
-        "caption": caption,
-        "telegram_sent": telegram_sent,
-        "segments": [{"title": s["title"], "text": s["text"]} for s in segments],
-    }
+        # Record before sending: a Telegram failure must not make the next run rebuild this video
+        record = NewsVideo(
+            file=out.name, article_ids=[a.id for a in countdown], caption=caption, duration_sec=round(duration, 1)
+        )
+        db.add(record)
+        await db.commit()
+
+        if send_telegram and settings.TELEGRAM_BOT_TOKEN and settings.TELEGRAM_CHAT_ID:
+            step("Gửi Telegram")
+            record.telegram_sent = await send_video_to_telegram(out, caption, countdown, duration)
+            await db.commit()
+        return {
+            "success": True,
+            "file": out.name,
+            "duration_sec": round(duration, 1),
+            "script_model": model,
+            "article_ids": record.article_ids,
+            "caption": caption,
+            "telegram_sent": record.telegram_sent,
+            "segments": [{"title": s["title"], "text": s["text"]} for s in segments],
+        }
+
+
+# ---------- background job (started from the UI) ----------
+
+class VideoJob:
+    """State of the one video build that can run at a time. In memory: a restart resets it to idle;
+    finished videos live in the news_videos table."""
+
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        self.status = "idle"  # idle | running | done | skipped | failed
+        self.step = ""
+        self.started_at: Optional[float] = None
+        self.result: Optional[Dict[str, Any]] = None
+        self.error: Optional[str] = None
+
+    def snapshot(self) -> Dict[str, Any]:
+        elapsed = round(time.time() - self.started_at, 1) if self.started_at else None
+        return {
+            "status": self.status,
+            "step": self.step,
+            "elapsed_sec": elapsed,
+            "result": self.result,
+            "error": self.error,
+        }
+
+
+video_job = VideoJob()
+_background_tasks: set = set()
+
+
+async def _run_job(hours: int, limit: int, send_telegram: bool, reuse: bool) -> None:
+    from app.core import database
+
+    try:
+        async with database.AsyncSessionLocal() as db:
+            result = await generate_news_video(
+                db, hours=hours, limit=limit, send_telegram=send_telegram, reuse=reuse,
+                on_step=lambda msg: setattr(video_job, "step", msg),
+            )
+        video_job.result = result
+        video_job.status = "done" if result.get("success") else "skipped"
+    except Exception as err:
+        logger.exception("Video job failed")
+        video_job.error = f"{type(err).__name__}: {err}"[:300]
+        video_job.status = "failed"
+    finally:
+        video_job.step = ""
+
+
+async def start_video_job(
+    hours: int = 24, limit: int = 3, send_telegram: bool = True, reuse: bool = False
+) -> Dict[str, Any]:
+    """Starts a build in the background. Returns at once: {started: True}, or {started: False, skipped, message}
+    when one is already running or there are not enough unused articles."""
+    from app.core import database
+
+    if video_lock.locked() or video_job.status == "running":
+        return {"started": False, "skipped": "busy", "message": "Đang tạo một video khác."}
+    async with database.AsyncSessionLocal() as db:
+        fresh = await pick_video_articles(db, hours, limit, reuse=reuse)
+    if len(fresh) < limit:
+        msg = f"Chỉ có {len(fresh)} bài mới chưa lên video (cần {limit})."
+        return {"started": False, "skipped": "not_enough_new_articles", "message": msg}
+
+    video_job.reset()
+    video_job.status, video_job.step, video_job.started_at = "running", "Chọn bài", time.time()
+    task = asyncio.create_task(_run_job(hours, limit, send_telegram, reuse))
+    _background_tasks.add(task)  # keep a reference so the task isn't garbage-collected mid-run
+    task.add_done_callback(_background_tasks.discard)
+    return {"started": True}

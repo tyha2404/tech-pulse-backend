@@ -180,3 +180,32 @@ def test_digest_link_url_is_escaped():
     )
     assert "phish.example\">" not in msg
     assert "&quot;&gt;&lt;a href=" in msg
+
+
+# ---------- media (generated videos) ----------
+
+
+@pytest.mark.parametrize(
+    "headers,expected_blocked",
+    [
+        ({"Sec-Fetch-Site": "same-site"}, False),  # <video src> from the Vite dev app (:5174 -> :8000)
+        ({"Sec-Fetch-Site": "same-origin"}, False),  # nginx /api proxy
+        ({}, False),  # curl, Telegram, scripts
+        ({"Sec-Fetch-Site": "cross-site"}, True),  # another website embedding the video
+        ({"Origin": EVIL, "Sec-Fetch-Site": "cross-site"}, True),
+        ({"Origin": EVIL}, True),
+    ],
+)
+async def test_video_files_allow_subresource_loads_but_not_other_websites(client, headers, expected_blocked):
+    async with client:
+        r = await client.get("/api/video/files/techpulse-20990101-000000.mp4", headers=headers)
+    # An allowed request reaches the handler (file does not exist: 404); a blocked one stops at 403
+    assert (r.status_code == 403) is expected_blocked
+    if not expected_blocked:
+        assert r.status_code == 404
+
+
+async def test_the_json_video_routes_stay_behind_the_full_guard(client):
+    async with client:
+        r = await client.get("/api/videos", headers={"Sec-Fetch-Site": "same-site"})
+    assert r.status_code == 403
