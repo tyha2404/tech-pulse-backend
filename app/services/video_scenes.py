@@ -50,7 +50,8 @@ def ease(x: float) -> float:
 
 @lru_cache(maxsize=32)
 def font(bold: bool, size: int) -> ImageFont.FreeTypeFont:
-    override = settings.VIDEO_FONT_BOLD_PATH if bold else settings.VIDEO_FONT_PATH
+    # VIDEO_FONT_PATH (one file for regular and bold) is for machines without a known Vietnamese font
+    override = settings.VIDEO_FONT_PATH
     for p in ([override] if override else []) + (BOLD_CANDIDATES if bold else FONT_CANDIDATES):
         if p and Path(p).exists():
             return ImageFont.truetype(p, size)

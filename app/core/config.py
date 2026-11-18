@@ -42,7 +42,6 @@ class Settings(BaseSettings):
         "AI_FALLBACK_MODELS", "nexo-chat,groq/openai/gpt-oss-120b"
     )
     AGY_BIN: str = os.getenv("AGY_BIN", "agy")  # absolute path if the service's PATH lacks ~/.local/bin
-    AGY_MAX_CONCURRENCY: int = int(os.getenv("AGY_MAX_CONCURRENCY", "3"))
     EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
 
     # AI Request Timeouts (Interactive/Chat vs Background/Crawl/Blueprint)
@@ -78,13 +77,10 @@ class Settings(BaseSettings):
     # Short vertical news video (TikTok)
     VIDEO_OUTPUT_DIR: str = os.getenv("VIDEO_OUTPUT_DIR", "output/videos")
     VIDEO_TTS_VOICE: str = os.getenv("VIDEO_TTS_VOICE", "vi-VN-HoaiMyNeural")
-    VIDEO_TTS_RATE: str = os.getenv("VIDEO_TTS_RATE", "+8%")
-    VIDEO_FPS: int = int(os.getenv("VIDEO_FPS", "30"))
     # Fetch each article's og:image for the video. Images belong to the publishers: credit is
     # shown on screen, but set false to avoid any copyright claims.
     VIDEO_USE_ARTICLE_IMAGES: bool = os.getenv("VIDEO_USE_ARTICLE_IMAGES", "true").lower() in ("true", "1", "yes")
     VIDEO_FONT_PATH: str = os.getenv("VIDEO_FONT_PATH", "")
-    VIDEO_FONT_BOLD_PATH: str = os.getenv("VIDEO_FONT_BOLD_PATH", "")
     BRIEFING_TIMEZONE: str = os.getenv("BRIEFING_TIMEZONE", "Asia/Ho_Chi_Minh")
     DAILY_BRIEFING_HOUR: int = int(os.getenv("DAILY_BRIEFING_HOUR", "22"))
     DAILY_BRIEFING_MINUTE: int = int(os.getenv("DAILY_BRIEFING_MINUTE", "0"))

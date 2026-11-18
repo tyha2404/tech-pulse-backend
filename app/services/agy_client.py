@@ -19,6 +19,7 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 AGY_PREFIX = "agy/"
+AGY_MAX_CONCURRENCY = 3  # parallel agy processes; each call costs ~12k tokens of agent overhead
 
 # Only what agy needs to find its login; DB passwords, API keys, tokens stay out.
 _ENV_KEEP = ("PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "TMPDIR", "SHELL", "TERM")
@@ -47,7 +48,7 @@ _semaphore: Optional[asyncio.Semaphore] = None
 def _get_semaphore() -> asyncio.Semaphore:
     global _semaphore
     if _semaphore is None:
-        _semaphore = asyncio.Semaphore(max(1, settings.AGY_MAX_CONCURRENCY))
+        _semaphore = asyncio.Semaphore(AGY_MAX_CONCURRENCY)
     return _semaphore
 
 

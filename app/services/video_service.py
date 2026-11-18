@@ -34,6 +34,9 @@ from app.services.daily_briefing import (
 
 logger = logging.getLogger(__name__)
 
+FPS = 30
+TTS_RATE = "+8%"
+
 SCRIPT_PROMPT = """Bạn viết kịch bản video dọc 25-35 giây (TikTok) "Top {count} tin công nghệ hôm nay" cho lập trình viên Việt Nam. Các bài dưới đây xếp theo thứ tự đếm ngược: bài đầu là Top {count}, bài cuối là Top 1 (nổi bật nhất).
 
 NGUYÊN TẮC: chỉ dùng thông tin trong danh sách bài. Không thêm số liệu, tên, ngày tháng không có trong bài. Không bịa, không giật gân sai sự thật, không emoji, không chữ Hán. Văn nói tự nhiên, câu ngắn.
@@ -214,7 +217,7 @@ async def synthesize(text: str, out_path: Path) -> float:
     for attempt in range(5):  # the free edge-tts endpoint sometimes returns no audio
         try:
             await edge_tts.Communicate(
-                text, settings.VIDEO_TTS_VOICE, rate=settings.VIDEO_TTS_RATE
+                text, settings.VIDEO_TTS_VOICE, rate=TTS_RATE
             ).save(str(out_path))
             return audio_duration(out_path)
         except Exception as err:
@@ -228,7 +231,7 @@ async def synthesize(text: str, out_path: Path) -> float:
 
 def _encode_scene(scene: Scene, audio: Path, duration: float, out: Path) -> None:
     """Pipes the scene's frames into ffmpeg together with its voice track."""
-    fps = settings.VIDEO_FPS
+    fps = FPS
     frames = max(1, round(duration * fps))
     log = out.with_suffix(".log")
     with open(log, "wb") as errf:
