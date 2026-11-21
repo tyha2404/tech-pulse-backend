@@ -49,7 +49,7 @@ DAILY_VIDEO_DELAY_MINUTES = 10
 # keeps the lowest-scored extras unused, so the next video picks them up and nothing is lost.
 MIN_ARTICLES = 3
 MAX_ARTICLES = 20
-SECONDS_PER_ARTICLE = 8
+SECONDS_PER_ARTICLE = 9
 
 
 def daily_video_schedule() -> Tuple[int, int]:
@@ -61,15 +61,20 @@ def daily_video_schedule() -> Tuple[int, int]:
 # One video at a time: rendering takes minutes and the TTS endpoint throttles parallel calls
 video_lock = asyncio.Lock()
 
-SCRIPT_PROMPT = """Bạn viết kịch bản video dọc khoảng {seconds} giây (TikTok) "Top {count} tin công nghệ hôm nay" cho lập trình viên Việt Nam. Các bài dưới đây xếp theo thứ tự đếm ngược: bài đầu là Top {count}, bài cuối là Top 1 (nổi bật nhất).
+SCRIPT_PROMPT = """Bạn là biên tập viên bản tin công nghệ ngắn trên TikTok cho lập trình viên Việt Nam. Viết lời đọc cho video dọc khoảng {seconds} giây: "Top {count} tin công nghệ hôm nay". Video KHÔNG có đoạn mở đầu hay kết thúc riêng: vào thẳng tin đầu tiên, kết thúc ngay sau tin cuối. Các bài dưới đây xếp theo thứ tự đếm ngược: bài đầu là Top {count}, bài cuối là Top 1 (nổi bật nhất). Hệ thống tự đọc "Top <số>." trước mỗi lời, nên đừng viết lại số thứ hạng.
 
-NGUYÊN TẮC: chỉ dùng thông tin trong danh sách bài. Không thêm số liệu, tên, ngày tháng không có trong bài. Không bịa, không giật gân sai sự thật, không emoji, không chữ Hán. Văn nói tự nhiên, câu ngắn.
+CẤU TRÚC MỖI LỜI (2 câu, 20-28 từ, đọc khoảng 8 giây):
+- Câu 1, tin: ai/cái gì, làm gì, kèm MỘT chi tiết cụ thể có trong bài (tên sản phẩm, phiên bản, con số, mốc thời gian). Mở bằng chi tiết gây chú ý, không mở bằng "Hôm nay", "Mới đây", "Theo".
+- Câu 2, ý nghĩa: điều này đổi gì cho lập trình viên (code, công cụ, chi phí, bảo mật, công việc), nói thẳng, cụ thể.
+Lời của bài đầu tiên phải đủ cuốn để giữ người xem ở lại (người xem chưa biết có Top 1 phía sau). Lời của bài cuối (Top 1) kết bằng một câu hỏi ngắn mời bình luận, không chào tạm biệt, không xin theo dõi.
+
+VĂN NÓI: đọc to lên phải trôi. Câu ngắn, từ thông dụng, giữ nguyên tên riêng và thuật ngữ kỹ thuật tiếng Anh quen thuộc (API, open source, LLM...). Không viết tắt khó đọc, không ký tự đặc biệt ($, %, /, &: viết thành chữ "đô la", "phần trăm", "trên", "và"), không dấu ngoặc, không trích dẫn nguyên văn, mỗi câu một ý và không quá 20 từ, không gạch đầu dòng, không emoji, không chữ Hán. Tránh sáo rỗng ("cuộc cách mạng", "bước ngoặt", "đừng bỏ lỡ") và câu lặp khuôn giữa các bài.
+
+NGUYÊN TẮC TRUNG THỰC: chỉ dùng thông tin trong danh sách bài. Không thêm số liệu, tên, ngày tháng không có trong bài; không giật gân sai sự thật. Bài chưa chắc chắn thì nói "theo báo cáo", "dự kiến".
 
 Trả về MỘT đối tượng JSON (không bọc markdown):
-{{"hook": "<8-12 từ, nhá hàng điều bất ngờ hoặc quan trọng nhất của bài Top 1 bằng một chi tiết cụ thể có trong bài; không tiết lộ hết; có thể là câu hỏi>",
- "items": [{{"id": <id bài>, "line": "<1-2 câu, 14-22 từ: chuyện gì xảy ra và vì sao lập trình viên nên quan tâm>"}}],
- "cta": "<8-14 từ: một câu hỏi để người xem bình luận về các tin trên, rồi mời theo dõi>",
- "caption": "<tối đa 90 ký tự: dòng mô tả bài đăng, gợi tò mò, đúng sự thật>",
+{{"items": [{{"id": <id bài>, "line": "<lời đọc 2 câu theo cấu trúc trên>"}}],
+ "caption": "<tối đa 90 ký tự: dòng mô tả bài đăng, nêu tin đáng chú ý nhất, gợi tò mò, đúng sự thật>",
  "hashtags": ["#...", "<4-5 hashtag, trộn tiếng Việt và tiếng Anh, bám chủ đề các bài>"]}}
 
 Có đúng {count} bài trong "items", theo đúng thứ tự đã cho, mỗi id đúng một lần.
@@ -114,7 +119,6 @@ async def pick_video_articles(db, hours: int, reuse: bool = False) -> List[Artic
 
 # ---------- script ----------
 
-DEFAULT_CTA = "Bạn quan tâm tin nào nhất? Bình luận và theo dõi để nhận tin mỗi ngày."
 BASE_HASHTAGS = ["#congnghe", "#tech", "#laptrinh"]
 
 
@@ -132,20 +136,16 @@ def _fallback_script(articles: List[Article]) -> Dict[str, Any]:
     """`articles` are in countdown order (best last)."""
     n = len(articles)
     return {
-        "hook": f"Top {n} tin công nghệ nóng nhất hôm nay",
         "items": [
             {"id": a.id, "line": spoken_text(short_description(a, 200)) or (a.vietnamese_title or a.title)}
             for a in articles
         ],
-        "cta": DEFAULT_CTA,
         "caption": f"Top {n} tin công nghệ nóng nhất hôm nay",
         "hashtags": _hashtags_from(articles),
     }
 
 
 def _validate_script(data: dict, articles: List[Article]) -> Optional[Dict[str, Any]]:
-    hook = str(data.get("hook") or "").strip()
-    cta = str(data.get("cta") or "").strip()
     lines = {}
     for it in data.get("items") or []:
         try:
@@ -153,7 +153,7 @@ def _validate_script(data: dict, articles: List[Article]) -> Optional[Dict[str, 
         except (TypeError, ValueError, AttributeError):
             continue
     items = [{"id": a.id, "line": lines[a.id]} for a in articles if lines.get(a.id)]
-    if not hook or len(items) != len(articles):
+    if len(items) != len(articles):
         return None
     raw_tags = data.get("hashtags") if isinstance(data.get("hashtags"), list) else []
     hashtags = []
@@ -162,10 +162,8 @@ def _validate_script(data: dict, articles: List[Article]) -> Optional[Dict[str, 
         if len(t) > 1 and t not in hashtags:
             hashtags.append(t)
     return {
-        "hook": hook,
         "items": items,
-        "cta": cta or DEFAULT_CTA,
-        "caption": str(data.get("caption") or hook).strip()[:120],
+        "caption": str(data.get("caption") or f"Top {len(articles)} tin công nghệ hôm nay").strip()[:120],
         "hashtags": (hashtags or _hashtags_from(articles))[:5],
     }
 
@@ -182,7 +180,7 @@ async def generate_script(articles: List[Article]) -> Tuple[Dict[str, Any], str]
     ]
     prompt = SCRIPT_PROMPT.format(
         count=len(articles),
-        seconds=6 + SECONDS_PER_ARTICLE * len(articles),
+        seconds=SECONDS_PER_ARTICLE * len(articles),
         articles_json=json.dumps(payload, ensure_ascii=False),
     )
     client = get_ai_client(settings.AI_TIMEOUT_BACKGROUND)
@@ -210,24 +208,22 @@ def build_segments(script: Dict[str, Any], articles: List[Article]) -> List[Dict
     """`articles` in countdown order: the first is ranked Top n, the last Top 1."""
     by_id = {a.id: a for a in articles}
     n = len(articles)
-    segs: List[Dict[str, Any]] = [
-        {"kind": "intro", "title": "", "text": script["hook"], "score": None, "meta": None, "image": None}
-    ]
+    segs: List[Dict[str, Any]] = []
     for i, it in enumerate(script["items"]):
         a = by_id[it["id"]]
+        rank = n - i
         segs.append(
             {
                 "kind": "item",
-                "rank": n - i,
+                "rank": rank,
                 "title": a.vietnamese_title or a.title,
-                "text": it["line"],
+                "text": f"Top {rank}. {spoken_text(it['line'])}",
                 "score": round(a.relevance_score, 1) if a.relevance_score else None,
                 "meta": a.source.name if a.source else None,
                 "url": a.url,
                 "image": None,
             }
         )
-    segs.append({"kind": "outro", "title": "", "text": script["cta"], "score": None, "meta": None, "image": None})
     return segs
 
 
@@ -422,9 +418,6 @@ async def render_video(
         for seg, img in zip(items, images):
             seg["image"] = img
         logger.info(f"Article images: {sum(i is not None for i in images)}/{len(items)} found")
-        intro = next((x for x in segments if x["kind"] == "intro"), None)
-        if intro is not None and items:
-            intro["image"] = items[-1]["image"]  # hook plays over the Top 1 story's image
 
     with tempfile.TemporaryDirectory(prefix="techpulse-video-") as tmp:
         tmp_dir = Path(tmp)
@@ -457,7 +450,7 @@ async def _cached_script(countdown: List[Article]) -> Tuple[Dict[str, Any], str]
     """The LLM script for this exact article set, kept for TTS_CACHE_MAX_AGE_SECONDS: a retried build must
     say the same words, or its cached audio would never match."""
     prune_cache()
-    path = _cache_dir() / f"script-{_cache_key(*[str(a.id) for a in countdown])}.json"
+    path = _cache_dir() / f"script-{_cache_key(SCRIPT_PROMPT, *[str(a.id) for a in countdown])}.json"
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         return data["script"], data["model"]

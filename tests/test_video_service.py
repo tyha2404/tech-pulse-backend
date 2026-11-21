@@ -17,31 +17,32 @@ def _art(i, score=8.0):
 
 def test_validate_script_requires_every_article():
     arts = [_art(1), _art(2)]
-    ok = {"hook": "Mở đầu", "items": [{"id": 1, "line": "a"}, {"id": 2, "line": "b"}], "cta": ""}
-    assert _validate_script(ok, arts)["cta"]  # default CTA filled
-    missing = {"hook": "Mở đầu", "items": [{"id": 1, "line": "a"}], "cta": "x"}
+    ok = {"items": [{"id": 1, "line": "a"}, {"id": 2, "line": "b"}]}
+    script = _validate_script(ok, arts)
+    assert script["caption"] and "hook" not in script and "cta" not in script
+    missing = {"items": [{"id": 1, "line": "a"}]}
     assert _validate_script(missing, arts) is None
-    assert _validate_script({"items": ok["items"]}, arts) is None  # no hook
 
 
 def test_validate_script_ignores_unknown_ids_and_garbage():
     arts = [_art(1)]
-    data = {"hook": "h", "items": [{"id": 99, "line": "x"}, {"id": "zz"}, None, {"id": 1, "line": "a"}]}
+    data = {"items": [{"id": 99, "line": "x"}, {"id": "zz"}, None, {"id": 1, "line": "a"}]}
     assert [i["id"] for i in _validate_script(data, arts)["items"]] == [1]
 
 
 def test_fallback_script_and_segments():
     arts = [_art(1), _art(2)]
     segs = build_segments(_fallback_script(arts), arts)
-    assert [s["kind"] for s in segs] == ["intro", "item", "item", "outro"]
-    assert segs[1]["line" if False else "text"] == "Câu một."
-    assert segs[1]["score"] == 8.0
+    assert [s["kind"] for s in segs] == ["item", "item"]  # no intro or outro
+    assert [s["rank"] for s in segs] == [2, 1]
+    assert segs[0]["text"] == "Top 2. Câu một."
+    assert segs[0]["score"] == 8.0
 
 
 def test_unscored_article_has_no_score_badge():
     arts = [_art(1, score=None)]
     segs = build_segments(_fallback_script(arts), arts)
-    assert segs[1]["score"] is None
+    assert segs[0]["score"] is None
 
 
 def test_spoken_text_cleans_fallback_artifacts():
