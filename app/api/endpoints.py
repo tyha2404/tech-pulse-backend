@@ -1026,8 +1026,29 @@ async def resend_video_to_telegram(video_id: int, db: AsyncSession = Depends(get
     return {"success": sent, "message": "Đã gửi video tới Telegram." if sent else "Telegram từ chối video. Xem log backend để biết lý do."}
 
 
+@router.delete("/videos/{video_id}")
+async def delete_video(video_id: int, db: AsyncSession = Depends(get_db)):
+    """Removes a built video (file, caption and record). Its articles can then go into a new video."""
+    from pathlib import Path
+
+    from app.models.models import NewsVideo
+
+    video = await db.get(NewsVideo, video_id)
+    if video is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy video")
+    base = Path(settings.VIDEO_OUTPUT_DIR)
+    mp4 = base / video.file
+    # Guard against a tampered record pointing outside the video folder
+    if mp4.resolve().parent == base.resolve():
+        mp4.unlink(missing_ok=True)
+        mp4.with_suffix(".txt").unlink(missing_ok=True)
+    await db.delete(video)
+    await db.commit()
+    return {"success": True, "message": "Đã xoá video."}
+
+
 @media_router.get("/video/files/{name}")
-async def download_video(name: str):
+async def download_video(name: str, download: bool = Query(False)):
     from pathlib import Path
 
     if not re.fullmatch(r"techpulse-\d{8}-\d{6}\.mp4", name):
@@ -1035,7 +1056,13 @@ async def download_video(name: str):
     path = Path(settings.VIDEO_OUTPUT_DIR) / name
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Không tìm thấy video")
-    return FileResponse(path, media_type="video/mp4", filename=name)
+    # Inline by default: an `attachment` header stops <video> from playing on Safari/iOS
+    return FileResponse(
+        path,
+        media_type="video/mp4",
+        filename=name,
+        content_disposition_type="attachment" if download else "inline",
+    )
 
 
 @router.post("/crawl-all")
