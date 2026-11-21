@@ -36,13 +36,20 @@ def test_fallback_script_and_segments():
     assert [s["kind"] for s in segs] == ["item", "item"]  # no intro or outro
     assert [s["rank"] for s in segs] == [2, 1]
     assert segs[0]["text"] == "Top 2. Câu một."
-    assert segs[0]["score"] == 8.0
+    assert "score" not in segs[0]  # the AI score is not shown in the video
 
 
-def test_unscored_article_has_no_score_badge():
-    arts = [_art(1, score=None)]
-    segs = build_segments(_fallback_script(arts), arts)
-    assert segs[0]["score"] is None
+def test_segments_carry_source_and_topics():
+    art = _art(1)
+    art.tags = ["AI", "PostgreSQL", "Backend", "Extra"]
+    seg = build_segments(_fallback_script([art]), [art])[0]
+    assert seg["meta"] == "HN" and seg["tags"] == ["AI", "PostgreSQL", "Backend"]
+    assert "age" not in seg and "reading" not in seg
+
+
+def test_segment_without_tags_still_builds():
+    seg = build_segments(_fallback_script([_art(1)]), [_art(1)])[0]
+    assert seg["tags"] == []
 
 
 def test_spoken_text_cleans_fallback_artifacts():

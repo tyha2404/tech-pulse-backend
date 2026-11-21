@@ -5,7 +5,7 @@ from app.services.video_scenes import H, W, Scene, ease, word_starts
 
 def _seg(image=None, kind="item"):
     return {"kind": kind, "title": "Tiêu đề thử nghiệm khá dài để xuống dòng", "text": "Một câu tóm tắt ngắn gọn.",
-            "score": 8.4, "meta": "HN", "image": image, "rank": 2}
+            "meta": "HN", "tags": ["AI", "PostgreSQL"], "image": image, "rank": 2}
 
 
 def test_word_starts_are_monotonic_and_start_at_zero():

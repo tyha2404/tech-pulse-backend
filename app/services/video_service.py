@@ -204,6 +204,13 @@ async def generate_script(articles: List[Article]) -> Tuple[Dict[str, Any], str]
     return _fallback_script(articles), "fallback"
 
 
+def _topic_chips(a: Article) -> List[str]:
+    tags = [str(t).strip() for t in (getattr(a, "tags", None) or []) if str(t).strip()]
+    if not tags:
+        tags = [str(t.get("name", "")).strip() for t in (getattr(a, "new_tech_stacks", None) or []) if isinstance(t, dict)]
+    return [t[:18] for t in tags if t][:3]
+
+
 def build_segments(script: Dict[str, Any], articles: List[Article]) -> List[Dict[str, Any]]:
     """`articles` in countdown order: the first is ranked Top n, the last Top 1."""
     by_id = {a.id: a for a in articles}
@@ -218,8 +225,8 @@ def build_segments(script: Dict[str, Any], articles: List[Article]) -> List[Dict
                 "rank": rank,
                 "title": a.vietnamese_title or a.title,
                 "text": f"Top {rank}. {spoken_text(it['line'])}",
-                "score": round(a.relevance_score, 1) if a.relevance_score else None,
                 "meta": a.source.name if a.source else None,
+                "tags": _topic_chips(a),
                 "url": a.url,
                 "image": None,
             }
@@ -250,17 +257,9 @@ def spoken_text(text: str) -> str:
 
 
 TTS_MAX_ATTEMPTS = 4
-# Voices tried (in order) once the primary keeps failing; the primary comes from VIDEO_TTS_VOICE
-TTS_FALLBACK_VOICES = ("vi-VN-NamMinhNeural", "vi-VN-HoaiMyNeural")
-TTS_SWITCH_VOICE_EVERY = 2  # attempts per voice before moving to the next one
 GTTS_ATTEMPTS = 3
+GTTS_TEMPO = 1.08  # gTTS has no rate option; speed it up to match edge-tts' TTS_RATE (+8%)
 TTS_CACHE_MAX_AGE_SECONDS = 24 * 3600
-
-
-def _tts_voices() -> List[str]:
-    voices = [settings.VIDEO_TTS_VOICE]
-    voices += [v for v in TTS_FALLBACK_VOICES if v not in voices]
-    return voices
 
 
 def _cache_dir() -> Path:
@@ -285,18 +284,28 @@ def prune_cache(max_age: float = TTS_CACHE_MAX_AGE_SECONDS) -> None:
 
 
 def _gtts_save(text: str, out_path: Path) -> None:
+    """gTTS voice sped up to roughly edge-tts' pace."""
     from gtts import gTTS
 
-    gTTS(text=text, lang="vi").save(str(out_path))
+    raw = out_path.with_suffix(".raw.mp3")
+    try:
+        gTTS(text=text, lang="vi").save(str(raw))
+        r = subprocess.run(
+            [_ffmpeg(), "-y", "-loglevel", "error", "-i", str(raw), "-filter:a", f"atempo={GTTS_TEMPO}", str(out_path)],
+            capture_output=True, text=True,
+        )
+        if r.returncode != 0:
+            raise RuntimeError(f"ffmpeg atempo failed: {r.stderr[-200:]}")
+    finally:
+        raw.unlink(missing_ok=True)
 
 
 async def _synthesize_edge(text: str, out_path: Path) -> None:
-    """edge-tts is a free, flaky endpoint (NoAudioReceived at random). Retries with jittered backoff and
-    rotates voices."""
-    voices = _tts_voices()
+    """edge-tts is a free, flaky endpoint (NoAudioReceived at random). Retries with jittered backoff, always
+    with the same voice: a video must not mix voices."""
+    voice = settings.VIDEO_TTS_VOICE
     last: Exception = RuntimeError("no attempt")
     for attempt in range(TTS_MAX_ATTEMPTS):
-        voice = voices[(attempt // TTS_SWITCH_VOICE_EVERY) % len(voices)]
         try:
             await edge_tts.Communicate(text, voice, rate=TTS_RATE).save(str(out_path))
             return
@@ -322,11 +331,12 @@ async def _synthesize_gtts(text: str, out_path: Path) -> None:
     raise RuntimeError(f"gTTS failed after {GTTS_ATTEMPTS} attempts: {last}")
 
 
-async def synthesize(text: str, out_path: Path) -> float:
-    """Voices one segment. Finished audio is cached by text, so a retried build (new temp dir, same script)
-    only reads the segments that are still missing. edge-tts first; gTTS when edge-tts keeps failing."""
+async def synthesize(text: str, out_path: Path, engine: str = "edge") -> float:
+    """Voices one segment with ONE engine ("edge" or "gtts"). Finished audio is cached by engine, voice and
+    text, so a retried build (new temp dir, same script) only reads the segments still missing."""
     text = spoken_text(text)
-    cached = _cache_dir() / f"{_cache_key(text)}.mp3"
+    voice = settings.VIDEO_TTS_VOICE if engine == "edge" else "gtts"
+    cached = _cache_dir() / f"{_cache_key(engine, voice, text)}.mp3"
     if cached.exists() and cached.stat().st_size > 0:
         try:
             duration = audio_duration(cached)
@@ -337,22 +347,35 @@ async def synthesize(text: str, out_path: Path) -> float:
 
     tmp = out_path.with_suffix(".part.mp3")
     try:
-        try:
-            await _synthesize_edge(text, tmp)
-        except Exception as edge_err:
-            if not settings.VIDEO_TTS_FALLBACK_GTTS:
-                raise
-            logger.warning(f"{edge_err}; falling back to gTTS")
-            try:
-                await _synthesize_gtts(text, tmp)
-            except Exception as g_err:
-                raise RuntimeError(f"TTS failed: {edge_err}; {g_err}") from g_err
+        await (_synthesize_edge if engine == "edge" else _synthesize_gtts)(text, tmp)
         duration = audio_duration(tmp)
         cached.write_bytes(tmp.read_bytes())
         tmp.replace(out_path)
         return duration
     finally:
         tmp.unlink(missing_ok=True)
+
+
+async def synthesize_all(
+    texts: List[str], tmp_dir: Path, on_step: Optional[Callable[[str], None]] = None
+) -> List[float]:
+    """Voices every segment with the same engine and voice. edge-tts first; if any segment still fails
+    after its retries, the whole video is voiced again with gTTS rather than mixing two voices."""
+    step = on_step or (lambda _msg: None)
+    engines = ["edge", "gtts"] if settings.VIDEO_TTS_FALLBACK_GTTS else ["edge"]
+    for n, engine in enumerate(engines):
+        try:
+            durations = []
+            for i, text in enumerate(texts):  # sequential: edge-tts throttles parallel calls
+                step(f"Đọc giọng ({i + 1}/{len(texts)})")
+                durations.append(await synthesize(text, tmp_dir / f"a{i}.mp3", engine))
+            return durations
+        except Exception as err:
+            if n == len(engines) - 1:
+                raise
+            logger.warning(f"{err}; voicing the whole video with gTTS so the voice stays the same")
+            step("Đọc lại toàn bộ bằng giọng dự phòng")
+    raise RuntimeError("no TTS engine")
 
 
 # ---------- assemble ----------
@@ -421,11 +444,9 @@ async def render_video(
 
     with tempfile.TemporaryDirectory(prefix="techpulse-video-") as tmp:
         tmp_dir = Path(tmp)
-        speech: List[float] = []
-        for i, seg in enumerate(segments):  # sequential: edge-tts throttles parallel calls
-            step(f"Đọc giọng ({i + 1}/{len(segments)})")
+        for seg in segments:
             seg["text"] = spoken_text(seg["text"])
-            speech.append(await synthesize(seg["text"], tmp_dir / f"a{i}.mp3"))
+        speech = await synthesize_all([seg["text"] for seg in segments], tmp_dir, on_step)
         durations = [d + tail for d in speech]
         total = sum(durations)
 

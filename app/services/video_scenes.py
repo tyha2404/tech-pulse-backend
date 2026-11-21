@@ -231,32 +231,28 @@ class Scene:
                 x = x0 + i * (bw_ + gap)
                 d.rectangle([x, y + h - 60 - bh_, x + bw_, y + h - 60], fill=SIGNAL_300 if i == bars // 2 else ACCENT_400)
 
-    def _score(self, frame: Image.Image, t: float) -> None:
-        """The memorable element: score counts up while an ECG trace draws and spikes."""
-        score = self.seg.get("score")
-        if not score:
+    def _info(self, frame: Image.Image, t: float) -> None:
+        """Header above the image: source and topic chips."""
+        seg = self.seg
+        a = ease((t - 0.1) / 0.4)
+        if a <= 0:
             return
-        d = ImageDraw.Draw(frame)
-        color = tier_color(score)
-        shown = score * ease((t - 0.1) / 0.8)
-        y0 = 170
-        d.text((PAD, y0), f"{shown:.1f}", font=font(True, 170), fill=color)
-        nw = d.textlength(f"{score:.1f}", font=font(True, 170))
-        d.text((PAD + nw + 14, y0 + 118), "/10", font=font(False, 40), fill="#8d98a5")
-        # trace
-        x_start, x_end, base = int(PAD + nw + 140), W - PAD - 40, y0 + 120
-        width = x_end - x_start
-        head = ease((t - 0.1) / 0.9)
-        amp = 120 * (score / 10)
-        pts = []
-        for i in range(int(width * head) + 1):
-            if i % 3 == 0:
-                u = i / width
-                pts.append((x_start + i, base - pulse_y(u, 1.0) * amp))
-        if len(pts) > 1:
-            d.line(pts, fill=color, width=6, joint="curve")
-            hx, hy = pts[-1]
-            d.ellipse([hx - 9, hy - 9, hx + 9, hy + 9], fill=WHITE)
+        layer = Image.new("RGBA", (W, self.HERO_Y - 150), (0, 0, 0, 0))
+        d = ImageDraw.Draw(layer)
+        y = 0
+        if seg.get("meta"):
+            d.text((PAD, y), seg["meta"], font=font(True, 60), fill=WHITE)
+            y += 84
+        x, chip_font = PAD, font(True, 32)
+        for tag in seg.get("tags") or []:
+            w = int(d.textlength(tag, font=chip_font)) + 40
+            if x + w > W - PAD:
+                break
+            d.rounded_rectangle([x, y, x + w, y + 54], radius=8, outline=ACCENT_400, width=3)
+            d.text((x + 20, y + 8), tag, font=chip_font, fill=ACCENT_400)
+            x += w + 16
+        layer.putalpha(layer.getchannel("A").point(lambda v: int(v * a)))
+        frame.paste(layer, (0, 160 + int((1 - a) * 30)), layer)
 
     def _title(self, frame: Image.Image, t: float) -> None:
         a = ease((t - 0.2) / 0.35)
@@ -292,7 +288,7 @@ class Scene:
         f = self.base.copy()
         if self.kind == "item":
             self._hero(f, t)
-            self._score(f, t)
+            self._info(f, t)
             self._title(f, t)
             self._caption(f, t, WHITE, SIGNAL_300, "#5d6874")
         elif self.kind == "intro":
