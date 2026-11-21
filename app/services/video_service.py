@@ -5,6 +5,7 @@ Pipeline: pick articles -> LLM script (fallback: summaries) -> edge-tts voice pe
 Cards are drawn by us, never the source article's images (copyright)."""
 import asyncio
 import datetime
+import hashlib
 import json
 import logging
 import random
@@ -252,10 +253,12 @@ def spoken_text(text: str) -> str:
     return " ".join(text.split())
 
 
-TTS_MAX_ATTEMPTS = 8
+TTS_MAX_ATTEMPTS = 4
 # Voices tried (in order) once the primary keeps failing; the primary comes from VIDEO_TTS_VOICE
 TTS_FALLBACK_VOICES = ("vi-VN-NamMinhNeural", "vi-VN-HoaiMyNeural")
 TTS_SWITCH_VOICE_EVERY = 2  # attempts per voice before moving to the next one
+GTTS_ATTEMPTS = 3
+TTS_CACHE_MAX_AGE_SECONDS = 24 * 3600
 
 
 def _tts_voices() -> List[str]:
@@ -264,23 +267,96 @@ def _tts_voices() -> List[str]:
     return voices
 
 
-async def synthesize(text: str, out_path: Path) -> float:
+def _cache_dir() -> Path:
+    d = Path(settings.VIDEO_OUTPUT_DIR) / ".tts_cache"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _cache_key(*parts: str) -> str:
+    return hashlib.sha1("\x1f".join(parts).encode("utf-8")).hexdigest()[:24]
+
+
+def prune_cache(max_age: float = TTS_CACHE_MAX_AGE_SECONDS) -> None:
+    """Drops cached audio/scripts older than max_age so an abandoned build doesn't leave files forever."""
+    try:
+        cutoff = time.time() - max_age
+        for f in _cache_dir().iterdir():
+            if f.is_file() and f.stat().st_mtime < cutoff:
+                f.unlink(missing_ok=True)
+    except OSError:
+        logger.warning("Could not prune the TTS cache", exc_info=True)
+
+
+def _gtts_save(text: str, out_path: Path) -> None:
+    from gtts import gTTS
+
+    gTTS(text=text, lang="vi").save(str(out_path))
+
+
+async def _synthesize_edge(text: str, out_path: Path) -> None:
     """edge-tts is a free, flaky endpoint (NoAudioReceived at random). Retries with jittered backoff and
-    rotates voices, so one bad segment doesn't cost the whole video."""
-    text = spoken_text(text)
+    rotates voices."""
     voices = _tts_voices()
     last: Exception = RuntimeError("no attempt")
     for attempt in range(TTS_MAX_ATTEMPTS):
         voice = voices[(attempt // TTS_SWITCH_VOICE_EVERY) % len(voices)]
         try:
             await edge_tts.Communicate(text, voice, rate=TTS_RATE).save(str(out_path))
-            return audio_duration(out_path)
+            return
         except Exception as err:
             last = err
             logger.warning(f"TTS attempt {attempt + 1} ({voice}) failed: {type(err).__name__}")
             if attempt < TTS_MAX_ATTEMPTS - 1:
                 await asyncio.sleep(min(3.0 * (attempt + 1), 20.0) + random.uniform(0, 3.0))
-    raise RuntimeError(f"TTS failed after {TTS_MAX_ATTEMPTS} attempts: {last}")
+    raise RuntimeError(f"edge-tts failed after {TTS_MAX_ATTEMPTS} attempts: {last}")
+
+
+async def _synthesize_gtts(text: str, out_path: Path) -> None:
+    last: Exception = RuntimeError("no attempt")
+    for attempt in range(GTTS_ATTEMPTS):
+        try:
+            await asyncio.to_thread(_gtts_save, text, out_path)
+            return
+        except Exception as err:
+            last = err
+            logger.warning(f"gTTS attempt {attempt + 1} failed: {type(err).__name__}")
+            if attempt < GTTS_ATTEMPTS - 1:
+                await asyncio.sleep(2.0 * (attempt + 1))
+    raise RuntimeError(f"gTTS failed after {GTTS_ATTEMPTS} attempts: {last}")
+
+
+async def synthesize(text: str, out_path: Path) -> float:
+    """Voices one segment. Finished audio is cached by text, so a retried build (new temp dir, same script)
+    only reads the segments that are still missing. edge-tts first; gTTS when edge-tts keeps failing."""
+    text = spoken_text(text)
+    cached = _cache_dir() / f"{_cache_key(text)}.mp3"
+    if cached.exists() and cached.stat().st_size > 0:
+        try:
+            duration = audio_duration(cached)
+            out_path.write_bytes(cached.read_bytes())
+            return duration
+        except Exception:
+            cached.unlink(missing_ok=True)
+
+    tmp = out_path.with_suffix(".part.mp3")
+    try:
+        try:
+            await _synthesize_edge(text, tmp)
+        except Exception as edge_err:
+            if not settings.VIDEO_TTS_FALLBACK_GTTS:
+                raise
+            logger.warning(f"{edge_err}; falling back to gTTS")
+            try:
+                await _synthesize_gtts(text, tmp)
+            except Exception as g_err:
+                raise RuntimeError(f"TTS failed: {edge_err}; {g_err}") from g_err
+        duration = audio_duration(tmp)
+        cached.write_bytes(tmp.read_bytes())
+        tmp.replace(out_path)
+        return duration
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 # ---------- assemble ----------
@@ -377,6 +453,24 @@ async def render_video(
     return total
 
 
+async def _cached_script(countdown: List[Article]) -> Tuple[Dict[str, Any], str]:
+    """The LLM script for this exact article set, kept for TTS_CACHE_MAX_AGE_SECONDS: a retried build must
+    say the same words, or its cached audio would never match."""
+    prune_cache()
+    path = _cache_dir() / f"script-{_cache_key(*[str(a.id) for a in countdown])}.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data["script"], data["model"]
+    except (OSError, ValueError, KeyError):
+        pass
+    script, model = await generate_script(countdown)
+    try:
+        path.write_text(json.dumps({"script": script, "model": model}, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        logger.warning("Could not cache the video script", exc_info=True)
+    return script, model
+
+
 def _not_enough_message(found: int) -> str:
     return f"Chỉ có {found} bài từ {settings.BRIEFING_MIN_SCORE:g} điểm chưa lên video (cần ít nhất {MIN_ARTICLES})."
 
@@ -439,7 +533,7 @@ async def generate_news_video(
             }
         countdown = list(reversed(articles))  # best story last: Top 3 -> Top 1
         step("Viết kịch bản")
-        script, model = await generate_script(countdown)
+        script, model = await _cached_script(countdown)
         segments = build_segments(script, countdown)
         stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         out = Path(settings.VIDEO_OUTPUT_DIR) / f"techpulse-{stamp}.mp4"

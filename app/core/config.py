@@ -77,6 +77,8 @@ class Settings(BaseSettings):
     # Short vertical news video (TikTok)
     VIDEO_OUTPUT_DIR: str = os.getenv("VIDEO_OUTPUT_DIR", "output/videos")
     VIDEO_TTS_VOICE: str = os.getenv("VIDEO_TTS_VOICE", "vi-VN-HoaiMyNeural")
+    # When edge-tts keeps failing for a segment, voice it with gTTS (free, no key) instead of failing the video
+    VIDEO_TTS_FALLBACK_GTTS: bool = os.getenv("VIDEO_TTS_FALLBACK_GTTS", "true").lower() in ("true", "1", "yes")
     # Fetch each article's og:image for the video. Images belong to the publishers: credit is
     # shown on screen, but set false to avoid any copyright claims.
     VIDEO_USE_ARTICLE_IMAGES: bool = os.getenv("VIDEO_USE_ARTICLE_IMAGES", "true").lower() in ("true", "1", "yes")
