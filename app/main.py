@@ -17,6 +17,9 @@ from sqlalchemy.future import select
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
 )
+# httpx logs full request URLs at INFO, which includes the Telegram bot token
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # Default authoritative sources (Global + Vietnam)
@@ -434,10 +437,10 @@ async def lifespan(app: FastAPI):
         id="daily_briefing",
     )
     async def daily_video_cron():
-        from app.services.video_service import start_video_job
+        from app.services.video_service import VIDEO_AUTO_RETRIES, start_video_job
 
         try:
-            result = await start_video_job()
+            result = await start_video_job(retries_left=VIDEO_AUTO_RETRIES)
             if result.get("started"):
                 logger.info("🎬 [Scheduler] Daily video started.")
             else:

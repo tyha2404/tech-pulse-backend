@@ -7,6 +7,7 @@ import asyncio
 import datetime
 import json
 import logging
+import random
 import re
 import subprocess
 import tempfile
@@ -251,20 +252,35 @@ def spoken_text(text: str) -> str:
     return " ".join(text.split())
 
 
+TTS_MAX_ATTEMPTS = 8
+# Voices tried (in order) once the primary keeps failing; the primary comes from VIDEO_TTS_VOICE
+TTS_FALLBACK_VOICES = ("vi-VN-NamMinhNeural", "vi-VN-HoaiMyNeural")
+TTS_SWITCH_VOICE_EVERY = 2  # attempts per voice before moving to the next one
+
+
+def _tts_voices() -> List[str]:
+    voices = [settings.VIDEO_TTS_VOICE]
+    voices += [v for v in TTS_FALLBACK_VOICES if v not in voices]
+    return voices
+
+
 async def synthesize(text: str, out_path: Path) -> float:
+    """edge-tts is a free, flaky endpoint (NoAudioReceived at random). Retries with jittered backoff and
+    rotates voices, so one bad segment doesn't cost the whole video."""
     text = spoken_text(text)
+    voices = _tts_voices()
     last: Exception = RuntimeError("no attempt")
-    for attempt in range(5):  # the free edge-tts endpoint sometimes returns no audio
+    for attempt in range(TTS_MAX_ATTEMPTS):
+        voice = voices[(attempt // TTS_SWITCH_VOICE_EVERY) % len(voices)]
         try:
-            await edge_tts.Communicate(
-                text, settings.VIDEO_TTS_VOICE, rate=TTS_RATE
-            ).save(str(out_path))
+            await edge_tts.Communicate(text, voice, rate=TTS_RATE).save(str(out_path))
             return audio_duration(out_path)
         except Exception as err:
             last = err
-            logger.warning(f"TTS attempt {attempt + 1} failed: {type(err).__name__}")
-            await asyncio.sleep(3.0 * (attempt + 1))
-    raise RuntimeError(f"TTS failed after 5 attempts: {last}")
+            logger.warning(f"TTS attempt {attempt + 1} ({voice}) failed: {type(err).__name__}")
+            if attempt < TTS_MAX_ATTEMPTS - 1:
+                await asyncio.sleep(min(3.0 * (attempt + 1), 20.0) + random.uniform(0, 3.0))
+    raise RuntimeError(f"TTS failed after {TTS_MAX_ATTEMPTS} attempts: {last}")
 
 
 # ---------- assemble ----------
@@ -485,7 +501,33 @@ video_job = VideoJob()
 _background_tasks: set = set()
 
 
-async def _run_job(hours: int, send_telegram: bool, reuse: bool) -> None:
+VIDEO_RETRY_DELAY_SECONDS = 20 * 60
+VIDEO_AUTO_RETRIES = 2
+
+
+async def _notify_video_failure(error: str, retries_left: int) -> None:
+    from app.services.telegram_service import escape_html, send_telegram_message
+
+    tail = (
+        f"Sẽ tự thử lại sau {VIDEO_RETRY_DELAY_SECONDS // 60} phút."
+        if retries_left > 0
+        else "Đã hết lượt thử lại tự động."
+    )
+    try:
+        await send_telegram_message(
+            f"⚠️ <b>Video tổng hợp thất bại</b>\n<code>{escape_html(error)}</code>\n{tail}",
+            disable_preview=True,
+        )
+    except Exception:
+        logger.exception("Could not send video failure notice")
+
+
+async def _retry_later(hours: int, send_telegram: bool, reuse: bool, retries_left: int) -> None:
+    await asyncio.sleep(VIDEO_RETRY_DELAY_SECONDS)
+    await start_video_job(hours, send_telegram, reuse, retries_left=retries_left)
+
+
+async def _run_job(hours: int, send_telegram: bool, reuse: bool, retries_left: int = 0) -> None:
     from app.core import database
 
     try:
@@ -500,12 +542,22 @@ async def _run_job(hours: int, send_telegram: bool, reuse: bool) -> None:
         logger.exception("Video job failed")
         video_job.error = f"{type(err).__name__}: {err}"[:300]
         video_job.status = "failed"
+        if send_telegram:
+            await _notify_video_failure(video_job.error, retries_left)
+        if retries_left > 0:
+            _spawn(_retry_later(hours, send_telegram, reuse, retries_left - 1))
     finally:
         video_job.step = ""
 
 
+def _spawn(coro) -> None:
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)  # keep a reference so the task isn't garbage-collected mid-run
+    task.add_done_callback(_background_tasks.discard)
+
+
 async def start_video_job(
-    hours: int = 24, send_telegram: bool = True, reuse: bool = False
+    hours: int = 24, send_telegram: bool = True, reuse: bool = False, retries_left: int = 0
 ) -> Dict[str, Any]:
     """Starts a build in the background. Returns at once: {started: True}, or {started: False, skipped, message}
     when one is already running or there are not enough unused articles."""
@@ -520,7 +572,5 @@ async def start_video_job(
 
     video_job.reset()
     video_job.status, video_job.step, video_job.started_at = "running", "Chọn bài", time.time()
-    task = asyncio.create_task(_run_job(hours, send_telegram, reuse))
-    _background_tasks.add(task)  # keep a reference so the task isn't garbage-collected mid-run
-    task.add_done_callback(_background_tasks.discard)
+    _spawn(_run_job(hours, send_telegram, reuse, retries_left))
     return {"started": True}
